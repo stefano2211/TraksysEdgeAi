@@ -1,0 +1,10 @@
+qdrant:
+  collections:
+    - mes_logs
+    - sop_pdfs
+    - custom_rules
+minio:
+  bucket: sop-pdfs
+api:
+  url: http://api:5000
+  token_url: http://token-api:5001

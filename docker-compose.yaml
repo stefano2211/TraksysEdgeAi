@@ -1,0 +1,113 @@
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile.api
+    container_name: api
+    ports:
+      - "5000:5000"
+    environment:
+      - JWT_SECRET_KEY=your-secret-key
+    volumes:
+      - db_data:/app
+    networks:
+      - mcp-network
+
+  token-api:
+    build:
+      context: ./token_api
+      dockerfile: Dockerfile.token
+    container_name: token-api
+    ports:
+      - "5001:5001"
+    environment:
+      - JWT_SECRET_KEY=your-secret-key
+    volumes:
+      - token_db_data:/app
+    networks:
+      - mcp-network
+
+  manufacturing-mcp:
+    build:
+      context: .
+      dockerfile: mcps/manufacturing/Dockerfile
+    container_name: manufacturing-mcp
+    ports:
+      - "8000:8000"
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    depends_on:
+      - api
+      - token-api
+      - qdrant
+      - ollama
+      - minio
+    networks:
+      - mcp-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - mcp-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - mcp-network
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "3001:8080"
+    environment:
+      - OLLAMA_API_BASE_URL=http://ollama:11434
+    volumes:
+      - openwebui_data:/app/backend/data
+    depends_on:
+      - manufacturing-mcp
+      - ollama
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - mcp-network
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - mcp-network
+
+networks:
+  mcp-network:
+    driver: bridge
+
+volumes:
+  db_data:
+  token_db_data:
+  qdrant_data:
+  openwebui_data:
+  ollama_data:
+  minio_data:
