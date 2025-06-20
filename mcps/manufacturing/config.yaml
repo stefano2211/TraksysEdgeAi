@@ -1,10 +1,14 @@
+data_source:
+  use_minio_logs: false  # true: datos desde MinIO, false: datos desde API
+api:
+  url: http://api:5000
+  token_url: http://token-api:5001
+minio:
+  bucket: sop-pdfs
+  mes_logs_bucket: mes-logs
 qdrant:
   collections:
     - mes_logs
     - sop_pdfs
     - custom_rules
-minio:
-  bucket: sop-pdfs
-api:
-  url: http://api:5000
-  token_url: http://token-api:5001
+    - mes_json_logs

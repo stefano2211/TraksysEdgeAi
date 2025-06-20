@@ -26,7 +26,7 @@ minio_client = MinioClient(
     access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
     secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin")
 )
-minio_client.ensure_bucket(config["minio"]["bucket"])
+minio_client.ensure_bucket(config["minio"]["bucket"], config["minio"]["mes_logs_bucket"])
 
 qdrant_manager = QdrantManager(host="qdrant", port=6333)
 for collection in config["qdrant"]["collections"]:
@@ -50,7 +50,6 @@ def fetch_mes_data(
     end_date: Optional[str] = None,
     specific_dates: Optional[List[str]] = None
 ) -> str:
-    """Recupera datos del sistema MES y los almacena en Qdrant."""
     try:
         key_values = key_values or {}
         if not key_figures:
@@ -91,68 +90,120 @@ def fetch_mes_data(
             start = datetime.strptime(start_date, "%Y-%m-%d")
             end = datetime.strptime(end_date, "%Y-%m-%d")
             delta = (end - start).days + 1
-            if delta > 0:
-                date_range = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(delta)]
-                must_conditions.append(models.FieldCondition(
-                    key="date",
-                    match=models.MatchAny(any=date_range)
-                ))
-        qdrant_results = qdrant_manager.scroll_data(
-            collection_name=config["qdrant"]["collections"][0],
-            filter_conditions=models.Filter(must=must_conditions) if must_conditions else None,
-            limit=1000
-        )
+            if delta <= 0:
+                return json.dumps({
+                    "status": "error",
+                    "message": "El rango de fechas es inválido",
+                    "count": 0,
+                    "data": [],
+                    "covered_dates": []
+                }, ensure_ascii=False)
+            date_range = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(delta)]
+            must_conditions.append(models.FieldCondition(
+                key="date",
+                match=models.MatchAny(any=date_range)
+            ))
+
         processed_data = []
-        for r in qdrant_results:
-            encrypted_payload = r.payload.get("encrypted_payload")
-            if encrypted_payload:
-                decrypted_data = encryption_manager.decrypt_data(encrypted_payload)
-                processed_data.append(decrypted_data)
-            else:
-                logger.warning(f"No encrypted payload for point {r.id}")
-        logger.info(f"Fetched {len(processed_data)} records from Qdrant for {key_values}")
-        params = {}
-        if specific_dates:
-            params["specific_date"] = specific_dates[0]
-        elif start_date and end_date:
-            params.update({"start_date": start_date, "end_date": end_date})
-        response = auth_client.get("/machines/", params=params)
-        response.raise_for_status()
-        all_data = response.json()
-        full_data = []
-        for record in all_data:
-            if all(record.get(k) == v for k, v in key_values.items()):
-                item = {"date": DataValidator.detect_and_normalize_date(record.get("date", "")) or "Desconocida"}
-                for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
-                    if field in record:
-                        item[field] = record[field]
-                full_data.append(item)
-        if full_data and specific_dates:
-            normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
-            full_data = [r for r in full_data if r.get("date") in normalized_dates]
-        elif full_data and start_date and end_date:
-            start = datetime.strptime(start_date, "%Y-%m-%d")
-            end = datetime.strptime(end_date, "%Y-%m-%d")
-            delta = (end - start).days + 1
-            if delta > 0:
+        collection_name = config["qdrant"]["collections"][0] if not config["data_source"]["use_minio_logs"] else config["qdrant"]["collections"][3]
+        if config["data_source"]["use_minio_logs"]:
+            all_data = minio_client.get_all_json_logs()
+            if not all_data:
+                return json.dumps({
+                    "status": "no_data",
+                    "message": f"No se encontraron datos en el bucket {config['minio']['mes_logs_bucket']}",
+                    "count": 0,
+                    "data": [],
+                    "covered_dates": []
+                }, ensure_ascii=False)
+            full_data = []
+            for record in all_data:
+                if all(record.get(k) == v for k, v in key_values.items()):
+                    item = {"date": DataValidator.detect_and_normalize_date(record.get("date", "")) or "Desconocida"}
+                    for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
+                        if field in record:
+                            item[field] = record[field]
+                    full_data.append(item)
+            if full_data and specific_dates:
+                normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
+                full_data = [r for r in full_data if r.get("date") in normalized_dates]
+            elif full_data and start_date and end_date:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+                end = datetime.strptime(end_date, "%Y-%m-%d")
+                delta = (end - start).days + 1
                 for i, record in enumerate(full_data):
                     if record["date"] == "Desconocida":
                         record["date"] = (start + timedelta(days=i % delta)).strftime("%Y-%m-%d")
-        if full_data:
-            points = []
-            for r in full_data:
-                encrypted_payload = encryption_manager.encrypt_data(r)
-                point = models.PointStruct(
-                    id=encryption_manager.generate_id(r),
-                    vector=qdrant_manager.model.encode(json.dumps(r)).tolist(),
-                    payload={"encrypted_payload": encrypted_payload}
-                )
-                points.append(point)
-            qdrant_manager.upsert_data(config["qdrant"]["collections"][0], points)
-            logger.info(f"Stored {len(points)} encrypted points in Qdrant mes_logs")
-        if not processed_data:
+            if full_data:
+                points = []
+                for r in full_data:
+                    encrypted_payload = encryption_manager.encrypt_data(r)
+                    point = models.PointStruct(
+                        id=encryption_manager.generate_id(r),
+                        vector=qdrant_manager.model.encode(json.dumps(r)).tolist(),
+                        payload={"encrypted_payload": encrypted_payload}
+                    )
+                    points.append(point)
+                qdrant_manager.upsert_data(collection_name, points)
+                logger.info(f"Stored {len(points)} encrypted points in Qdrant {collection_name}")
+            processed_data = full_data
+        else:
+            qdrant_results = qdrant_manager.scroll_data(
+                collection_name=collection_name,
+                filter_conditions=models.Filter(must=must_conditions) if must_conditions else None,
+                limit=1000
+            )
+            for r in qdrant_results:
+                encrypted_payload = r.payload.get("encrypted_payload")
+                if encrypted_payload:
+                    decrypted_data = encryption_manager.decrypt_data(encrypted_payload)
+                    processed_data.append(decrypted_data)
+                else:
+                    logger.warning(f"No encrypted payload for point {r.id}")
+            if not processed_data:
+                params = {}
+                if specific_dates:
+                    params["specific_date"] = specific_dates[0]
+                elif start_date and end_date:
+                    params.update({"start_date": start_date, "end_date": end_date})
+                response = auth_client.get("/machines/", params=params)
+                response.raise_for_status()
+                all_data = response.json()
+                full_data = []
+                for record in all_data:
+                    if all(record.get(k) == v for k, v in key_values.items()):
+                        item = {"date": DataValidator.detect_and_normalize_date(record.get("date", "")) or "Desconocida"}
+                        for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
+                            if field in record:
+                                item[field] = record[field]
+                        full_data.append(item)
+                if full_data and specific_dates:
+                    normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
+                    full_data = [r for r in full_data if r.get("date") in normalized_dates]
+                elif full_data and start_date and end_date:
+                    start = datetime.strptime(start_date, "%Y-%m-%d")
+                    end = datetime.strptime(end_date, "%Y-%m-%d")
+                    delta = (end - start).days + 1
+                    for i, record in enumerate(full_data):
+                        if record["date"] == "Desconocida":
+                            record["date"] = (start + timedelta(days=i % delta)).strftime("%Y-%m-%d")
+                if full_data:
+                    points = []
+                    for r in full_data:
+                        encrypted_payload = encryption_manager.encrypt_data(r)
+                        point = models.PointStruct(
+                            id=encryption_manager.generate_id(r),
+                            vector=qdrant_manager.model.encode(json.dumps(r)).tolist(),
+                            payload={"encrypted_payload": encrypted_payload}
+                        )
+                        points.append(point)
+                    qdrant_manager.upsert_data(collection_name, points)
+                    logger.info(f"Stored {len(points)} encrypted points in Qdrant {collection_name}")
+                processed_data = full_data
+
+        if processed_data:
             processed_data = [
-                r for r in full_data
+                r for r in processed_data
                 if all(r.get(k) == v for k, v in key_values.items())
             ]
             logger.info(f"Filtered {len(processed_data)} records in memory for {key_values}")
@@ -191,26 +242,27 @@ def fetch_mes_data(
 
 @mcp.tool()
 def get_pdf_content(ctx: Context, filename: str) -> str:
-    """Extrae el contenido de un PDF almacenado en MinIO."""
     return minio_client.get_pdf_content(filename)
 
 @mcp.tool()
 def list_fields(ctx: Context) -> str:
-    """Lista los campos disponibles en el sistema MES y sus tipos de datos."""
     try:
-        response = auth_client.get("/machines/")
-        response.raise_for_status()
-        records = response.json()
-        if not records:
+        if config["data_source"]["use_minio_logs"]:
+            all_data = minio_client.get_all_json_logs()
+        else:
+            response = auth_client.get("/machines/")
+            response.raise_for_status()
+            all_data = response.json()
+        if not all_data:
             return json.dumps({
                 "status": "no_data",
                 "message": "No se encontraron registros en el sistema MES",
                 "key_figures": [],
                 "key_values": {}
-            })
-        sample = records[0]
+            }, ensure_ascii=False)
+        sample = all_data[0]
         key_figures = [k for k, v in sample.items() if isinstance(v, (int, float))]
-        key_values = {k: sorted({rec[k] for rec in records if k in rec}) for k, v in sample.items() if isinstance(v, str)}
+        key_values = {k: sorted({rec[k] for rec in all_data if k in rec}) for k, v in sample.items() if isinstance(v, str)}
         return json.dumps({
             "status": "success",
             "key_figures": key_figures,
@@ -235,7 +287,6 @@ def add_custom_rule(
     unit: Optional[str] = None,
     description: str = ""
 ) -> str:
-    """Agrega una regla personalizada para monitorear el cumplimiento de máquinas."""
     try:
         if isinstance(machines, str):
             try:
@@ -333,7 +384,6 @@ def list_custom_rules(
     machine: Optional[str] = None,
     limit: int = 10
 ) -> str:
-    """Lista las reglas personalizadas almacenadas en Qdrant."""
     try:
         filter_conditions = []
         if rule_id:
@@ -395,7 +445,6 @@ def delete_custom_rule(
     ctx: Context,
     rule_id: str
 ) -> str:
-    """Elimina una regla personalizada por su ID."""
     try:
         existing = qdrant_manager.client.retrieve(
             collection_name=config["qdrant"]["collections"][2],
@@ -599,7 +648,7 @@ def analyze_compliance(
             for identifier in identifiers:
                 pdf_result = json.loads(get_pdf_content(ctx, f"{identifier}.pdf"))
                 if pdf_result["status"] == "success":
-                    sop_content[identifier] = pdf_result["content"]
+                    sop_content[identifier] = pdf_result.get("content", "")
                     logger.info(f"SOP content for {identifier_field}={identifier}: {sop_content[identifier][:100]}...")
                 else:
                     sop_content[identifier] = ""
@@ -644,6 +693,7 @@ def analyze_compliance(
             "results": results,
             "sop_content": sop_content,
             "custom_rules": custom_rules,
+            "custom_rules_applied": len(custom_rules),
             "analysis_notes": analysis_notes
         }, ensure_ascii=False)
     except Exception as e:
@@ -664,7 +714,48 @@ def get_mes_dataset(
     end_date: Optional[str] = None,
     specific_dates: Optional[List[str]] = None
 ) -> str:
-    """Recupera un dataset del sistema MES y lo almacena en Qdrant."""
+    """
+    Recupera datos del sistema MES aplicando filtros por campos categóricos, métricas numéricas y fechas.
+
+    INSTRUCCIONES PARA EL LLM:
+    - Antes de construir la consulta, llama a `list_fields` para obtener los campos válidos (`key_figures` y `key_values`).
+    - Usa solo campos presentes en la respuesta de `list_fields`.
+    - Usa `specific_dates` (lista de fechas YYYY-MM-DD) para días concretos, o `start_date` y `end_date` (YYYY-MM-DD) para rangos. No combines ambos.
+    - Si los campos o fechas no son válidos, devuelve un mensaje de error solicitando corrección.
+
+    Ejemplos de uso:
+    1. Fechas específicas:
+       {
+           "key_values": {"machine": "ModelA"},
+           "key_figures": ["defects"],
+           "specific_dates": ["2025-04-09", "2025-04-11"]
+       }
+    2. Rango de fechas:
+       {
+           "key_values": {"machine": "ModelA"},
+           "key_figures": ["defects"],
+           "start_date": "2025-04-09",
+           "end_date": "2025-04-11"
+       }
+    3. Sin filtros:
+       {
+           "key_values": {"machine": "ModelA"},
+           "key_figures": [],
+           "start_date": "2025-04-09",
+           "end_date": "2025-04-11",
+       }
+
+    Args:
+        ctx (Context): Contexto FastMCP.
+        key_values (Optional[Dict[str, str]]): Filtros categóricos.
+        key_figures (Optional[List[str]]): Métricas numéricas.
+        start_date (Optional[str]): Fecha inicio (YYYY-MM-DD).
+        end_date (Optional[str]): Fecha fin (YYYY-MM-DD).
+        specific_dates (Optional[List[str]]): Lista de fechas específicas (YYYY-MM-DD).
+
+    Returns:
+        str: JSON con los datos filtrados.
+    """
     try:
         key_values = key_values or {}
         if not key_figures:
@@ -689,75 +780,85 @@ def get_mes_dataset(
                 match=models.MatchAny(any=normalized_dates)
             ))
         elif start_date and end_date:
-            start = datetime.strptime(start_date, "%Y-%m-%d")
-            end = datetime.strptime(end_date, "%Y-%m-%d")
-            delta = (end - start).days + 1
-            if delta > 0:
+            try:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+                end = datetime.strptime(end_date, "%Y-%m-%d")
+                delta = (end - start).days + 1
+                if delta <= 0:
+                    return json.dumps([], ensure_ascii=False)
                 date_range = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(delta)]
                 must_conditions.append(models.FieldCondition(
                     key="date",
                     match=models.MatchAny(any=date_range)
                 ))
-        qdrant_results = qdrant_manager.scroll_data(
-            config["qdrant"]["collections"][0],
-            filter_conditions=models.Filter(must=must_conditions) if must_conditions else None,
-            limit=1000
-        )
+            except ValueError as e:
+                logger.error(f"Invalid date format: {str(e)}")
+                return json.dumps([], ensure_ascii=False)
+        collection_name = config["qdrant"]["collections"][0] if not config["data_source"]["use_minio_logs"] else config["qdrant"]["collections"][3]
         processed_data = []
-        for r in qdrant_results:
-            encrypted_payload = r.payload.get("encrypted_payload")
-            if encrypted_payload:
-                decrypted_data = encryption_manager.decrypt_data(encrypted_payload)
-                processed_data.append(decrypted_data)
-            else:
-                logger.warning(f"No encrypted payload for point {r.id}")
-        logger.info(f"Fetched {len(processed_data)} records from Qdrant for {key_values}")
-        if not processed_data or not (key_values or key_figures or start_date or end_date or specific_dates):
-            params = {}
-            if specific_dates:
-                params["specific_date"] = specific_dates[0]
-            elif start_date and end_date:
-                params.update({"start_date": start_date, "end_date": end_date})
-            response = auth_client.get("/machines/", params=params)
-            response.raise_for_status()
-            all_data = response.json()
-            full_data = []
-            for record in all_data:
-                if all(record.get(k) == v for k, v in key_values.items()):
-                    item = {"date": DataValidator.detect_and_normalize_date(record.get("date", "")) or "Desconocida"}
-                    for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
-                        if field in record:
-                            item[field] = record[field]
-                    full_data.append(item)
-            if full_data and specific_dates:
-                normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
-                full_data = [r for r in full_data if r.get("date") in normalized_dates]
-            elif full_data and start_date and end_date:
-                start = datetime.strptime(start_date, "%Y-%m-%d")
-                end = datetime.strptime(end_date, "%Y-%m-%d")
-                delta = (end - start).days + 1
-                if delta > 0:
-                    for i, record in enumerate(full_data):
-                        if record["date"] == "Desconocida":
-                            record["date"] = (start + timedelta(days=i % delta)).strftime("%Y-%m-%d")
-            if full_data:
-                points = []
-                for r in full_data:
-                    encrypted_payload = encryption_manager.encrypt_data(r)
-                    point = models.PointStruct(
-                        id=encryption_manager.generate_id(r),
-                        vector=qdrant_manager.model.encode(json.dumps(r)).tolist(),
-                        payload={"encrypted_payload": encrypted_payload}
-                    )
-                    points.append(point)
-                qdrant_manager.upsert_data(config["qdrant"]["collections"][0], points)
-                logger.info(f"Stored {len(points)} encrypted points in Qdrant mes_logs")
-            processed_data = full_data
+        if config["data_source"]["use_minio_logs"]:
+            processed_data = minio_client.get_all_json_logs()
+            if not processed_data:
+                logger.info(f"No data found in bucket {config['minio']['mes_logs_bucket']}")
+                return json.dumps([], ensure_ascii=False)
+        else:
+            qdrant_results = qdrant_manager.scroll_data(
+                collection_name=collection_name,
+                filter_conditions=models.Filter(must=must_conditions) if must_conditions else None,
+                limit=1000
+            )
+            for r in qdrant_results:
+                encrypted_payload = r.payload.get("encrypted_payload")
+                if encrypted_payload:
+                    decrypted_data = encryption_manager.decrypt_data(encrypted_payload)
+                    processed_data.append(decrypted_data)
+                else:
+                    logger.warning(f"No encrypted payload for point {r.id}")
+            if not processed_data:
+                params = {}
+                if specific_dates:
+                    params["specific_date"] = specific_dates[0]
+                elif start_date and end_date:
+                    params.update({"start_date": start_date, "end_date": end_date})
+                response = auth_client.get("/machines/", params=params)
+                response.raise_for_status()
+                all_data = response.json()
+                processed_data = []
+                for record in all_data:
+                    if all(record.get(k) == v for k, v in key_values.items()):
+                        item = {"date": DataValidator.detect_and_normalize_date(record.get("date", "")) or "Desconocida"}
+                        for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
+                            if field in record:
+                                item[field] = record[field]
+                        processed_data.append(item)
+                if processed_data:
+                    points = []
+                    for r in processed_data:
+                        encrypted_payload = encryption_manager.encrypt_data(r)
+                        point = models.PointStruct(
+                            id=encryption_manager.generate_id(r),
+                            vector=qdrant_manager.model.encode(json.dumps(r)).tolist(),
+                            payload={"encrypted_payload": encrypted_payload}
+                        )
+                        points.append(point)
+                    qdrant_manager.upsert_data(collection_name, points)
+                    logger.info(f"Stored {len(points)} encrypted points in Qdrant {collection_name}")
         if processed_data:
             processed_data = [
                 r for r in processed_data
                 if all(r.get(k) == v for k, v in key_values.items())
             ]
+            if specific_dates:
+                normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
+                processed_data = [r for r in processed_data if r.get("date") in normalized_dates]
+            elif start_date and end_date:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+                end = datetime.strptime(end_date, "%Y-%m-%d")
+                delta = (end - start).days + 1
+                if delta > 0:
+                    for i, record in enumerate(processed_data):
+                        if record["date"] == "Desconocida":
+                            record["date"] = (start + timedelta(days=i % delta)).strftime("%Y-%m-%d")
             logger.info(f"Filtered {len(processed_data)} records in memory for {key_values}")
         response_fields = ["date"] + list(key_values.keys()) + key_figures
         response_data = [
@@ -771,7 +872,6 @@ def get_mes_dataset(
 
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
-    """Lista las herramientas disponibles en el MCP."""
     try:
         tools = []
         try:
