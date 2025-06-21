@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 # Configuración
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key")  # Cambia en producción
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")  # Cambia en producción
 ALGORITHM = "HS256"
 
 # Modelos

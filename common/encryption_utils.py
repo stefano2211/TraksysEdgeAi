@@ -7,7 +7,16 @@ logger = logging.getLogger(__name__)
 
 class EncryptionManager:
     def __init__(self, key: str):
-        self.fernet = Fernet(key.encode())
+        if not key:
+            raise ValueError("Encryption key must be provided")
+        try:
+            self.fernet = Fernet(key.encode())
+        except ValueError as e:
+            logger.error(f"Invalid encryption key format: {str(e)}")
+            raise ValueError("Invalid encryption key format")
+        except Exception as e:
+            logger.error(f"Failed to initialize Fernet: {str(e)}")
+            raise
 
     def encrypt_data(self, data: dict) -> str:
         """Encripta un diccionario como JSON."""

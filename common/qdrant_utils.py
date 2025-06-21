@@ -7,6 +7,8 @@ logger = logging.getLogger(__name__)
 
 class QdrantManager:
     def __init__(self, host: str, port: int):
+        if not host or not port:
+            raise ValueError("Qdrant host and port must be provided")
         self.client = QdrantClient(host=host, port=port)
         self.model = SentenceTransformer('all-MiniLM-L6-v2')
         self.collections = []

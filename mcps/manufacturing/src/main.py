@@ -16,19 +16,41 @@ import inspect
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def expand_env_vars(obj):
+    if isinstance(obj, dict):
+        return {k: expand_env_vars(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [expand_env_vars(i) for i in obj]
+    elif isinstance(obj, str):
+        return os.path.expandvars(obj)
+    else:
+        return obj
+
+
 with open("/app/config.yaml", "r") as f:
     config = yaml.safe_load(f)
+
+config = expand_env_vars(config)
+logger.info(f"API URL: {config['api']['url']}, TOKEN API URL: {config['api']['token_url']}")
+
+# Parsear QDRANT_COLLECTIONS si está en formato de cadena
+if isinstance(config["qdrant"]["collections"], str):
+    config["qdrant"]["collections"] = config["qdrant"]["collections"].split(",")
 
 mcp = FastMCP("Manufacturing Compliance Processor")
 
 minio_client = MinioClient(
-    endpoint=os.getenv("MINIO_ENDPOINT", "minio:9000"),
-    access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
-    secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin")
+    endpoint=os.getenv("MINIO_ENDPOINT"),
+    access_key=os.getenv("MINIO_ACCESS_KEY"),
+    secret_key=os.getenv("MINIO_SECRET_KEY"),
+    secure=os.getenv("MINIO_SECURE", "false").lower() == "true"
 )
 minio_client.ensure_bucket(config["minio"]["bucket"], config["minio"]["mes_logs_bucket"])
 
-qdrant_manager = QdrantManager(host="qdrant", port=6333)
+qdrant_manager = QdrantManager(
+    host=os.getenv("QDRANT_HOST"),
+    port=int(os.getenv("QDRANT_PORT"))
+)
 for collection in config["qdrant"]["collections"]:
     qdrant_manager.initialize_collection(collection)
 
@@ -38,10 +60,10 @@ auth_client = AuthClient(
 )
 
 encryption_manager = EncryptionManager(
-    os.getenv("ENCRYPTION_KEY", "2X3y5z7A9bCdEfGhIjKlMnOpQrStUvWxYz012345678=")
+    os.getenv("ENCRYPTION_KEY")
 )
 
-@mcp.tool()
+
 def fetch_mes_data(
     ctx: Context,
     key_values: Optional[Dict[str, str]] = None,

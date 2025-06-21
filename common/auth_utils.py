@@ -6,6 +6,8 @@ logger = logging.getLogger(__name__)
 
 class AuthClient:
     def __init__(self, api_url: str, token_api_url: str):
+        if not api_url or not token_api_url:
+            raise ValueError("API URL and Token API URL must be provided")
         self.api_url = api_url
         self.token_api_url = token_api_url
         self.client = httpx.Client()

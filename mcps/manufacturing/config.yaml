@@ -1,8 +1,8 @@
 data_source:
   use_minio_logs: false  # true: datos desde MinIO, false: datos desde API
 api:
-  url: http://api:5000
-  token_url: http://token-api:5001
+  url: ${API_URL}
+  token_url: ${TOKEN_API_URL}
 minio:
   bucket: sop-pdfs
   mes_logs_bucket: mes-logs

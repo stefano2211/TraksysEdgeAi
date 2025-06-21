@@ -5,11 +5,14 @@ from typing import List, Dict
 from minio import Minio
 from minio.error import S3Error
 import pdfplumber
+import os
 
 logger = logging.getLogger(__name__)
 
 class MinioClient:
     def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False):
+        if not all([endpoint, access_key, secret_key]):
+            raise ValueError("MinIO endpoint, access_key, and secret_key must be provided")
         self.client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
         self.bucket_name = None
         self.mes_logs_bucket = None

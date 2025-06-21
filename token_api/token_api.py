@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 # Configuración
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key")  # Debe coincidir con la API principal
-ALGORITHM = "HS256"
-TOKEN_DB = "token_database.db"
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")  # Debe coincidir con la API principal
+ALGORITHM = os.getenv("ALGORITHM")
+TOKEN_DB = os.getenv("TOKEN_DB")
 
 # Modelo
 class TokenRequest(BaseModel):
