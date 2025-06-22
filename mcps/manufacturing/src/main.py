@@ -2,7 +2,7 @@ import logging
 import json
 import yaml
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict
 from mcp.server.fastmcp import FastMCP, Context
 from common.minio_utils import MinioClient
 from common.qdrant_utils import QdrantManager
@@ -10,21 +10,13 @@ from common.auth_utils import AuthClient
 from common.encryption_utils import EncryptionManager
 from data_validators import DataValidator
 from qdrant_client.http import models
+from utils import expand_env_vars
 import os
 import inspect
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def expand_env_vars(obj):
-    if isinstance(obj, dict):
-        return {k: expand_env_vars(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [expand_env_vars(i) for i in obj]
-    elif isinstance(obj, str):
-        return os.path.expandvars(obj)
-    else:
-        return obj
 
 
 with open("/app/config.yaml", "r") as f:
@@ -32,10 +24,6 @@ with open("/app/config.yaml", "r") as f:
 
 config = expand_env_vars(config)
 logger.info(f"API URL: {config['api']['url']}, TOKEN API URL: {config['api']['token_url']}")
-
-# Parsear QDRANT_COLLECTIONS si está en formato de cadena
-if isinstance(config["qdrant"]["collections"], str):
-    config["qdrant"]["collections"] = config["qdrant"]["collections"].split(",")
 
 mcp = FastMCP("Manufacturing Compliance Processor")
 
@@ -51,8 +39,10 @@ qdrant_manager = QdrantManager(
     host=os.getenv("QDRANT_HOST"),
     port=int(os.getenv("QDRANT_PORT"))
 )
+# Inicializar solo las colecciones necesarias, excluyendo custom_rules
 for collection in config["qdrant"]["collections"]:
-    qdrant_manager.initialize_collection(collection)
+    if collection != "custom_rules":
+        qdrant_manager.initialize_collection(collection)
 
 auth_client = AuthClient(
     api_url=config["api"]["url"],
@@ -127,7 +117,7 @@ def fetch_mes_data(
             ))
 
         processed_data = []
-        collection_name = config["qdrant"]["collections"][0] if not config["data_source"]["use_minio_logs"] else config["qdrant"]["collections"][3]
+        collection_name = config["qdrant"]["collections"][0] if not config["data_source"]["use_minio_logs"] else config["qdrant"]["collections"][2]
         if config["data_source"]["use_minio_logs"]:
             all_data = minio_client.get_all_json_logs()
             if not all_data:
@@ -264,10 +254,18 @@ def fetch_mes_data(
 
 @mcp.tool()
 def get_pdf_content(ctx: Context, filename: str) -> str:
+    """"Recupera el contenido de un archivo PDF almacenado en MinIO.
+    Args:
+        ctx (Context): Contexto de la solicitud proporcionado por el MCP.
+        filename (str): Nombre del archivo PDF a recuperar.
+    """
     return minio_client.get_pdf_content(filename)
 
 @mcp.tool()
 def list_fields(ctx: Context) -> str:
+    """
+    Lista los campos disponibles en el dataset MES, incluyendo métricas numéricas y valores categóricos.
+    """
     try:
         if config["data_source"]["use_minio_logs"]:
             all_data = minio_client.get_all_json_logs()
@@ -300,211 +298,6 @@ def list_fields(ctx: Context) -> str:
         }, ensure_ascii=False)
 
 @mcp.tool()
-def add_custom_rule(
-    ctx: Context,
-    machines: Union[List[str], str],
-    key_figures: Union[Dict[str, float], str],
-    key_values: Optional[Dict[str, str]] = None,
-    operator: str = "<=",
-    unit: Optional[str] = None,
-    description: str = ""
-) -> str:
-    try:
-        if isinstance(machines, str):
-            try:
-                machines = json.loads(machines)
-            except json.JSONDecodeError:
-                machines = [machines.strip()]
-        if isinstance(key_figures, str):
-            try:
-                parsed_figures = json.loads(key_figures)
-                if not isinstance(parsed_figures, dict):
-                    raise ValueError("key_figures JSON must be a dictionary")
-                key_figures = parsed_figures
-            except json.JSONDecodeError:
-                parsed_figures = {}
-                for pair in key_figures.split(','):
-                    if '=' in pair:
-                        field, value = pair.split('=', 1)
-                    elif ':' in pair:
-                        field, value = pair.split(':', 1)
-                    else:
-                        raise ValueError(f"Invalid format: {pair}")
-                    field = field.strip()
-                    parsed_figures[field] = float(value.strip())
-                key_figures = parsed_figures
-        fields_info = json.loads(list_fields(ctx))
-        if fields_info["status"] != "success":
-            raise ValueError("Could not validate against API")
-        valid_machines = fields_info["key_values"].get("machine", [])
-        invalid_machines = [m for m in machines if m not in valid_machines]
-        if invalid_machines:
-            raise ValueError(f"Invalid machines: {invalid_machines}. Valid machines: {valid_machines}")
-        invalid_metrics = [f for f in key_figures if f not in fields_info["key_figures"]]
-        if invalid_metrics:
-            raise ValueError(f"Invalid metrics: {invalid_metrics}. Valid metrics: {fields_info['key_figures']}")
-        valid_operators = [">=", "<=", ">", "<", "==", "!="]
-        if operator not in valid_operators:
-            raise ValueError(f"Invalid operator. Use one of: {valid_operators}")
-        if key_values:
-            for k, v in key_values.items():
-                if k not in fields_info["key_values"] or v not in fields_info["key_values"].get(k, []):
-                    raise ValueError(f"Invalid filter: {k}={v}")
-        final_rule = {
-            "machines": machines,
-            "key_figures": key_figures,
-            "key_values": key_values or {},
-            "operator": operator,
-            "unit": unit,
-            "description": description
-        }
-        embedding_text = description or " ".join(
-            [f"{k} {operator} {v}{unit or ''}" for k, v in key_figures.items()]
-        )
-        point = models.PointStruct(
-            id=encryption_manager.generate_id(final_rule),
-            vector=qdrant_manager.model.encode(embedding_text).tolist(),
-            payload=final_rule
-        )
-        qdrant_manager.upsert_data(config["qdrant"]["collections"][2], [point])
-        metrics_desc = ", ".join(
-            [f"{k} {operator} {v}{unit or ''}" for k, v in key_figures.items()]
-        )
-        filters_desc = ", ".join([f"{k}={v}" for k, v in (key_values or {}).items()])
-        message = f"Rule added for {len(machines)} machine(s): {metrics_desc}"
-        if filters_desc:
-            message += f" | Filters: {filters_desc}"
-        return json.dumps({
-            "status": "success",
-            "message": message,
-            "rule": final_rule,
-            "details": {
-                "machines_count": len(machines),
-                "metrics_count": len(key_figures),
-                "filters_count": len(key_values or {})
-            }
-        }, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error adding rule: {str(e)}")
-        return json.dumps({
-            "status": "error",
-            "message": str(e),
-            "input_parameters": {
-                "machines": machines,
-                "key_figures": key_figures,
-                "key_values": key_values,
-                "operator": operator,
-                "unit": unit,
-                "description": description
-            }
-        }, ensure_ascii=False)
-
-@mcp.tool()
-def list_custom_rules(
-    ctx: Context,
-    rule_id: Optional[str] = None,
-    machine: Optional[str] = None,
-    limit: int = 10
-) -> str:
-    try:
-        filter_conditions = []
-        if rule_id:
-            filter_conditions.append(
-                models.FieldCondition(
-                    key="id",
-                    match=models.MatchValue(value=rule_id)
-                )
-            )
-        if machine:
-            filter_conditions.append(
-                models.FieldCondition(
-                    key="machines",
-                    match=models.MatchAny(any=[machine])
-                )
-            )
-        scroll_filter = models.Filter(must=filter_conditions) if filter_conditions else None
-        rules = qdrant_manager.scroll_data(
-            config["qdrant"]["collections"][2],
-            filter_conditions=scroll_filter,
-            limit=limit
-        )
-        formatted_rules = []
-        for rule in rules:
-            formatted_rules.append({
-                "id": rule.id,
-                "machines": rule.payload.get("machines", []),
-                "key_figures": rule.payload.get("key_figures", {}),
-                "operator": rule.payload.get("operator", ""),
-                "unit": rule.payload.get("unit", ""),
-                "description": rule.payload.get("description", ""),
-                "created_at": rule.payload.get("created_at", ""),
-                "applies_to": f"{len(rule.payload.get('machines', []))} machines",
-                "metrics": list(rule.payload.get("key_figures", {}).keys())
-            })
-        return json.dumps({
-            "status": "success",
-            "count": len(formatted_rules),
-            "rules": formatted_rules,
-            "metadata": {
-                "collection": config["qdrant"]["collections"][2],
-                "limit": limit,
-                "filters": {
-                    "by_id": bool(rule_id),
-                    "by_machine": machine if machine else None
-                }
-            }
-        }, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error listing rules: {str(e)}")
-        return json.dumps({
-            "status": "error",
-            "message": str(e),
-            "rules": []
-        }, ensure_ascii=False)
-
-@mcp.tool()
-def delete_custom_rule(
-    ctx: Context,
-    rule_id: str
-) -> str:
-    try:
-        existing = qdrant_manager.client.retrieve(
-            collection_name=config["qdrant"]["collections"][2],
-            ids=[rule_id],
-            with_payload=True
-        )
-        if not existing:
-            return json.dumps({
-                "status": "error",
-                "message": f"Rule with ID {rule_id} not found"
-            }, ensure_ascii=False)
-        qdrant_manager.client.delete(
-            collection_name=config["qdrant"]["collections"][2],
-            points_selector=models.PointIdsList(points=[rule_id])
-        )
-        rule_data = existing[0].payload
-        metrics = list(rule_data.get("key_figures", {}).keys())
-        machines = rule_data.get("machines", [])
-        return json.dumps({
-            "status": "success",
-            "message": f"Rule deleted: {', '.join(metrics)} for {len(machines)} machine(s)",
-            "deleted_rule": {
-                "id": rule_id,
-                "affected_machines": machines,
-                "metrics": metrics,
-                "operator": rule_data.get("operator", ""),
-                "description": rule_data.get("description", "")
-            }
-        }, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error deleting rule {rule_id}: {str(e)}")
-        return json.dumps({
-            "status": "error",
-            "message": str(e),
-            "rule_id": rule_id
-        }, ensure_ascii=False)
-
-@mcp.tool()
 def analyze_compliance(
     ctx: Context,
     key_values: Optional[Dict[str, str]] = None,
@@ -514,10 +307,10 @@ def analyze_compliance(
     specific_dates: Optional[List[str]] = None
 ) -> str:
     """
-    Analiza el cumplimiento de los datos MES contra reglas SOP y personalizadas.
+    Analiza el cumplimiento de los datos MES contra reglas SOP.
 
     Esta función recupera datos del sistema MES, los compara con procedimientos operativos estándar (SOPs)
-    almacenados en MinIO y reglas personalizadas en Qdrant, y genera un informe de cumplimiento.
+    almacenados en MinIO y genera un informe de cumplimiento.
 
     Args:
         ctx (Context): Contexto de la solicitud proporcionado por el MCP.
@@ -528,7 +321,7 @@ def analyze_compliance(
         specific_dates (Optional[List[str]]): Lista de fechas específicas para el análisis (formato YYYY-MM-DD).
 
     Returns:
-        str: Respuesta en formato JSON con el estado, resultados, contenido de SOPs, reglas aplicadas y notas.
+        str: Respuesta en formato JSON con el estado, resultados, contenido de SOPs y notas.
 
     INSTRUCCIONES PARA EL LLM:
     1. **Obtener campos válidos**: Antes de construir la consulta, llama a la función `list_fields` para obtener los
@@ -595,12 +388,12 @@ def analyze_compliance(
              "end_date": "2025-04-11"
          }
          ```
-        - Para un rango de fechas sin key figures:
+       - Para un rango de fechas sin key figures:
          ```json
          {
              "key_values": {
-                "machine": "ModelA", 
-                "production_line": "Line3"
+                 "machine": "ModelA",
+                 "production_line": "Line3"
              },
              "key_figures": [],
              "start_date": "2025-04-09",
@@ -654,7 +447,6 @@ def analyze_compliance(
                 "metrics_analyzed": key_figures,
                 "results": [],
                 "sop_content": {},
-                "custom_rules_applied": 0,
                 "analysis_notes": analysis_notes
             }, ensure_ascii=False)
         if fetch_result["status"] != "success":
@@ -678,17 +470,6 @@ def analyze_compliance(
                     logger.warning(f"Failed to load SOP for {identifier_field}={identifier}: {pdf_result['message']}")
         else:
             analysis_notes.append("No identifier field or identifiers found; no SOPs loaded.")
-        custom_rules = []
-        if identifiers and identifier_field:
-            custom_result = qdrant_manager.scroll_data(
-                config["qdrant"]["collections"][2],
-                filter_conditions=models.Filter(must=[
-                    models.FieldCondition(key=identifier_field, match=models.MatchAny(any=list(identifiers)))
-                ]),
-                limit=100
-            )
-            custom_rules = [r.payload for r in custom_result]
-            logger.info(f"Custom rules found: {len(custom_rules)}")
         results = []
         for record in fetch_result["data"]:
             analysis = {
@@ -714,8 +495,6 @@ def analyze_compliance(
             "metrics_analyzed": key_figures,
             "results": results,
             "sop_content": sop_content,
-            "custom_rules": custom_rules,
-            "custom_rules_applied": len(custom_rules),
             "analysis_notes": analysis_notes
         }, ensure_ascii=False)
     except Exception as e:
@@ -764,7 +543,7 @@ def get_mes_dataset(
            "key_values": {"machine": "ModelA"},
            "key_figures": [],
            "start_date": "2025-04-09",
-           "end_date": "2025-04-11",
+           "end_date": "2025-04-11"
        }
 
     Args:
@@ -779,121 +558,24 @@ def get_mes_dataset(
         str: JSON con los datos filtrados.
     """
     try:
-        key_values = key_values or {}
-        if not key_figures:
-            fields_info = json.loads(list_fields(ctx))
-            if fields_info["status"] != "success":
-                return json.dumps([], ensure_ascii=False)
-            key_figures = fields_info["key_figures"]
-            logger.info(f"No key_figures provided, using all numeric fields: {key_figures}")
-        else:
-            key_figures = key_figures or []
-        fields_info = DataValidator.validate_fields(ctx, key_figures, key_values, start_date, end_date, specific_dates)
-        logger.info(f"Fetching MES dataset for key_values={key_values}, key_figures={key_figures}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
-        must_conditions = []
-        for k, v in key_values.items():
-            must_conditions.append(models.FieldCondition(key=k, match=models.MatchValue(value=v)))
-        if specific_dates:
-            normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
-            if not normalized_dates:
-                return json.dumps([], ensure_ascii=False)
-            must_conditions.append(models.FieldCondition(
-                key="date",
-                match=models.MatchAny(any=normalized_dates)
-            ))
-        elif start_date and end_date:
-            try:
-                start = datetime.strptime(start_date, "%Y-%m-%d")
-                end = datetime.strptime(end_date, "%Y-%m-%d")
-                delta = (end - start).days + 1
-                if delta <= 0:
-                    return json.dumps([], ensure_ascii=False)
-                date_range = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(delta)]
-                must_conditions.append(models.FieldCondition(
-                    key="date",
-                    match=models.MatchAny(any=date_range)
-                ))
-            except ValueError as e:
-                logger.error(f"Invalid date format: {str(e)}")
-                return json.dumps([], ensure_ascii=False)
-        collection_name = config["qdrant"]["collections"][0] if not config["data_source"]["use_minio_logs"] else config["qdrant"]["collections"][3]
-        processed_data = []
-        if config["data_source"]["use_minio_logs"]:
-            processed_data = minio_client.get_all_json_logs()
-            if not processed_data:
-                logger.info(f"No data found in bucket {config['minio']['mes_logs_bucket']}")
-                return json.dumps([], ensure_ascii=False)
-        else:
-            qdrant_results = qdrant_manager.scroll_data(
-                collection_name=collection_name,
-                filter_conditions=models.Filter(must=must_conditions) if must_conditions else None,
-                limit=1000
-            )
-            for r in qdrant_results:
-                encrypted_payload = r.payload.get("encrypted_payload")
-                if encrypted_payload:
-                    decrypted_data = encryption_manager.decrypt_data(encrypted_payload)
-                    processed_data.append(decrypted_data)
-                else:
-                    logger.warning(f"No encrypted payload for point {r.id}")
-            if not processed_data:
-                params = {}
-                if specific_dates:
-                    params["specific_date"] = specific_dates[0]
-                elif start_date and end_date:
-                    params.update({"start_date": start_date, "end_date": end_date})
-                response = auth_client.get("/machines/", params=params)
-                response.raise_for_status()
-                all_data = response.json()
-                processed_data = []
-                for record in all_data:
-                    if all(record.get(k) == v for k, v in key_values.items()):
-                        item = {"date": DataValidator.detect_and_normalize_date(record.get("date", "")) or "Desconocida"}
-                        for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
-                            if field in record:
-                                item[field] = record[field]
-                        processed_data.append(item)
-                if processed_data:
-                    points = []
-                    for r in processed_data:
-                        encrypted_payload = encryption_manager.encrypt_data(r)
-                        point = models.PointStruct(
-                            id=encryption_manager.generate_id(r),
-                            vector=qdrant_manager.model.encode(json.dumps(r)).tolist(),
-                            payload={"encrypted_payload": encrypted_payload}
-                        )
-                        points.append(point)
-                    qdrant_manager.upsert_data(collection_name, points)
-                    logger.info(f"Stored {len(points)} encrypted points in Qdrant {collection_name}")
-        if processed_data:
-            processed_data = [
-                r for r in processed_data
-                if all(r.get(k) == v for k, v in key_values.items())
-            ]
-            if specific_dates:
-                normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
-                processed_data = [r for r in processed_data if r.get("date") in normalized_dates]
-            elif start_date and end_date:
-                start = datetime.strptime(start_date, "%Y-%m-%d")
-                end = datetime.strptime(end_date, "%Y-%m-%d")
-                delta = (end - start).days + 1
-                if delta > 0:
-                    for i, record in enumerate(processed_data):
-                        if record["date"] == "Desconocida":
-                            record["date"] = (start + timedelta(days=i % delta)).strftime("%Y-%m-%d")
-            logger.info(f"Filtered {len(processed_data)} records in memory for {key_values}")
-        response_fields = ["date"] + list(key_values.keys()) + key_figures
-        response_data = [
-            {k: r[k] for k in response_fields if k in r}
-            for r in processed_data
-        ]
-        return json.dumps(response_data, ensure_ascii=False)
+        fetch_result = json.loads(fetch_mes_data(ctx, key_values, key_figures, start_date, end_date, specific_dates))
+        if fetch_result["status"] != "success":
+            logger.info(f"No data retrieved: {fetch_result.get('message', 'No message')}")
+            return json.dumps([], ensure_ascii=False)
+        return json.dumps(fetch_result["data"], ensure_ascii=False)
     except Exception as e:
         logger.error(f"Dataset retrieval failed: {str(e)}")
         return json.dumps([], ensure_ascii=False)
 
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
+    """
+    Lista las herramientas disponibles en el MCP, incluyendo las definidas por el usuario y las internas de FastMCP.
+    INSTRUCCIONES PARA EL LLM:
+    - Esta función devuelve un JSON con el nombre, descripción y parámetros de cada herramienta.
+    - Si no hay herramientas disponibles, devuelve un mensaje indicando que no se encontraron herramientas.
+    - Si ocurre un error al listar las herramientas, devuelve un mensaje de error.
+    """
     try:
         tools = []
         try:
