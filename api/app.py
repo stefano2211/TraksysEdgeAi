@@ -34,7 +34,7 @@ security = HTTPBearer()
 
 # Inicialización de la base de datos
 def init_db():
-    """Inicializa la base de datos SQLite con tablas para máquinas, sesiones y usuarios."""
+    """Inicializa la base de datos SQLite con tablas para máquinas, empleados, sesiones y usuarios."""
     try:
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
@@ -55,6 +55,24 @@ def init_db():
                 defect_type TEXT NOT NULL,
                 throughput REAL NOT NULL,
                 inventory_level INTEGER NOT NULL
+            )
+        """)
+        
+        # Tabla para empleados
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS employees (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                shift TEXT NOT NULL,
+                assigned_machine TEXT NOT NULL,
+                production_line TEXT NOT NULL,
+                hire_date TEXT NOT NULL,
+                termination_date TEXT,
+                hours_worked REAL NOT NULL,
+                training_status TEXT NOT NULL,
+                date TEXT NOT NULL
             )
         """)
         
@@ -101,6 +119,29 @@ def init_db():
                     date, machine, production_line, material, batch_id, uptime, defects,
                     vibration, temperature, defect_type, throughput, inventory_level
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, fixed_records)
+        
+        # Insertar registros fijos para empleados
+        cursor.execute("SELECT COUNT(*) FROM employees")
+        count = cursor.fetchone()[0]
+        if count == 0:
+            fixed_records = [
+                ("001", "John Doe", "Operator", "Morning", "ModelA", "Line3", "2024-01-15", None, 8.0, "Completed", "2025-04-10"),
+                ("002", "Jane Smith", "Supervisor", "Evening", "ModelB", "Line2", "2023-06-20", None, 7.5, "In Progress", "2025-04-10"),
+                ("003", "Carlos Lopez", "Technician", "Night", "ModelC", "Line1", "2024-03-10", None, 8.5, "Completed", "2025-04-11"),
+                ("004", "Maria Garcia", "Operator", "Morning", "ModelD", "Line3", "2024-02-01", None, 8.0, "Completed", "2025-04-10"),
+                ("005", "Ahmed Khan", "Supervisor", "Evening", "ModelE", "Line2", "2023-09-15", None, 7.0, "In Progress", "2025-04-10"),
+                ("006", "Sophie Chen", "Operator", "Morning", "ModelF", "Line1", "2024-05-05", None, 8.0, "Completed", "2025-04-10"),
+                ("007", "David Brown", "Technician", "Night", "ModelA", "Line1", "2023-11-30", None, 8.5, "Completed", "2025-04-09"),
+                ("008", "Emma Wilson", "Operator", "Morning", "ModelB", "Line2", "2024-04-12", None, 7.5, "In Progress", "2025-04-09"),
+                ("009", "Lucas Martinez", "Supervisor", "Evening", "ModelC", "Line1", "2023-07-25", None, 8.0, "Completed", "2025-04-09"),
+                ("010", "Olivia Lee", "Operator", "Morning", "ModelD", "Line3", "2024-01-20", None, 8.0, "Completed", "2025-04-11"),
+            ]
+            cursor.executemany("""
+                INSERT INTO employees (
+                    employee_id, name, role, shift, assigned_machine, production_line,
+                    hire_date, termination_date, hours_worked, training_status, date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, fixed_records)
         
         conn.commit()
@@ -209,7 +250,7 @@ async def login(request: LoginRequest):
     finally:
         conn.close()
 
-# Endpoint para obtener todos los registros (protegido)
+# Endpoint para obtener todos los registros de máquinas (protegido)
 @app.get("/machines/")
 async def get_all_machines(
     start_date: Optional[str] = None,
@@ -342,6 +383,141 @@ async def get_machine_records(
         raise
     except Exception as e:
         logger.error(f"Failed to fetch machine records: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        conn.close()
+
+# Endpoint para obtener todos los registros de empleados (protegido)
+@app.get("/employees/")
+async def get_all_employees(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    specific_date: Optional[str] = None,
+    username: str = Depends(validate_token)
+):
+    """Obtiene todos los registros de empleados, opcionalmente filtrados por fechas."""
+    try:
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+        
+        base_query = """
+            SELECT id, employee_id, name, role, shift, assigned_machine, production_line,
+                   hire_date, termination_date, hours_worked, training_status, date
+            FROM employees
+        """
+        
+        conditions = []
+        params = []
+        
+        if specific_date:
+            conditions.append("date = ?")
+            params.append(specific_date)
+        else:
+            if start_date:
+                conditions.append("date >= ?")
+                params.append(start_date)
+            if end_date:
+                conditions.append("date <= ?")
+                params.append(end_date)
+        
+        query = base_query
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        
+        query += " ORDER BY date DESC"
+        
+        cursor.execute(query, params)
+        
+        employees = []
+        for row in cursor.fetchall():
+            employees.append({
+                "id": row[0],
+                "employee_id": row[1],
+                "name": row[2],
+                "role": row[3],
+                "shift": row[4],
+                "assigned_machine": row[5],
+                "production_line": row[6],
+                "hire_date": row[7],
+                "termination_date": row[8],
+                "hours_worked": row[9],
+                "training_status": row[10],
+                "date": row[11]
+            })
+        return employees
+    except Exception as e:
+        logger.error(f"Failed to fetch employees: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        conn.close()
+
+# Endpoint para obtener registros por empleado (protegido)
+@app.get("/employees/{employee_id}")
+async def get_employee_records(
+    employee_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    specific_date: Optional[str] = None,
+    username: str = Depends(validate_token)
+):
+    """Obtiene registros para un empleado específico, opcionalmente filtrados por fechas."""
+    try:
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT id, employee_id, name, role, shift, assigned_machine, production_line,
+                   hire_date, termination_date, hours_worked, training_status, date
+            FROM employees 
+            WHERE employee_id = ?
+        """
+        
+        params = [employee_id]
+        conditions = []
+        
+        if specific_date:
+            conditions.append("date = ?")
+            params.append(specific_date)
+        else:
+            if start_date:
+                conditions.append("date >= ?")
+                params.append(start_date)
+            if end_date:
+                conditions.append("date <= ?")
+                params.append(end_date)
+        
+        if conditions:
+            query += " AND " + " AND ".join(conditions)
+        
+        query += " ORDER BY date DESC"
+        
+        cursor.execute(query, params)
+        
+        records = []
+        for row in cursor.fetchall():
+            records.append({
+                "id": row[0],
+                "employee_id": row[1],
+                "name": row[2],
+                "role": row[3],
+                "shift": row[4],
+                "assigned_machine": row[5],
+                "production_line": row[6],
+                "hire_date": row[7],
+                "termination_date": row[8],
+                "hours_worked": row[9],
+                "training_status": row[10],
+                "date": row[11]
+            })
+        
+        if not records:
+            raise HTTPException(status_code=404, detail="Empleado no encontrado")
+        
+        return records
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch employee records: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         conn.close()

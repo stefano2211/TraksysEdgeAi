@@ -32,10 +32,16 @@ services:
   manufacturing-mcp:
     build:
       context: .
-      dockerfile: mcps/manufacturing/Dockerfile
+      dockerfile: mcps/Dockerfile
+      args:
+        MCP_NAME: manufacturing
+        MCP_PORT: 8000
+        CONFIG_FILE: config.yaml
     container_name: manufacturing-mcp
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - MINIO_ENDPOINT=${MINIO_ENDPOINT}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
@@ -46,6 +52,40 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - API_URL=${API_URL}
       - TOKEN_API_URL=${TOKEN_API_URL}
+      - MCP_PORT=8000
+    depends_on:
+      - api
+      - token-api
+      - qdrant
+      - ollama
+      - minio
+    networks:
+      - mcp-network
+    
+  human-resources-mcp:
+    build:
+      context: .
+      dockerfile: mcps/Dockerfile
+      args:
+        MCP_NAME: human-resources
+        MCP_PORT: 8001
+        CONFIG_FILE: config.yaml
+    container_name: hr-mcp
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_SECURE=${MINIO_SECURE}
+      - QDRANT_HOST=${QDRANT_HOST}
+      - QDRANT_PORT=${QDRANT_PORT}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - API_URL=${API_URL}
+      - TOKEN_API_URL=${TOKEN_API_URL}
+      - MCP_PORT=8001
     depends_on:
       - api
       - token-api
@@ -87,6 +127,7 @@ services:
     depends_on:
       - manufacturing-mcp
       - ollama
+      - human-resources-mcp
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

@@ -1,0 +1,10 @@
+data_source:
+  use_minio_logs: false
+api:
+  url: ${API_URL}
+  token_url: ${TOKEN_API_URL}
+minio:
+  bucket: hr-documents
+  hr_logs_bucket: hr-logs
+qdrant:
+  collections: ["hr_logs", "hr_documents", "hr_json_logs"]
