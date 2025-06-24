@@ -37,10 +37,13 @@ class MinioClient:
                 logger.error(f"Failed to create bucket {mes_logs_bucket}: {str(e)}")
                 raise
 
-    def get_pdf_content(self, filename: str) -> str:
+    def get_pdf_content(self, filename: str, bucket_name: str = None) -> str:
         """Extrae el contenido de un PDF desde MinIO."""
+        bucket = bucket_name or self.bucket_name
+        if not bucket:
+            raise ValueError("Bucket name must be provided or set in ensure_bucket")
         try:
-            response = self.client.get_object(self.bucket_name, filename)
+            response = self.client.get_object(bucket, filename)
             pdf_data = response.read()
             response.close()
             response.release_conn()
@@ -52,7 +55,7 @@ class MinioClient:
                 "content": content
             }, ensure_ascii=False)
         except S3Error as e:
-            available_pdfs = [obj.object_name for obj in self.client.list_objects(self.bucket_name)]
+            available_pdfs = [obj.object_name for obj in self.client.list_objects(bucket)]
             logger.warning(f"PDF not found: {filename}. Available PDFs: {', '.join(available_pdfs)}")
             return json.dumps({
                 "status": "error",
@@ -94,5 +97,5 @@ class MinioClient:
             logger.error(f"Failed to read JSON logs from {self.mes_logs_bucket}: {str(e)}")
             return []
         except Exception as e:
-            logger.error(f"Error reading JSON logs: {str(e)}")
+            logger.error(f"Error retrieving JSON logs: {str(e)}")
             return []
