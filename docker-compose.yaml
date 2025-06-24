@@ -1,11 +1,29 @@
 services:
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    container_name: nginx
+    ports:
+      - "8080:80"
+      - "443:443"
+    volumes:
+      - ./certs:/etc/nginx/certs
+    depends_on:
+      - api
+      - token-api
+      - manufacturing-mcp
+      - human-resources-mcp
+    networks:
+      - mcp-network
+
   api:
     build:
       context: ./api
       dockerfile: Dockerfile.api
     container_name: api
-    ports:
-      - "5000:5000"
+    expose:
+      - "5000"  # Solo expone internamente, NGINX manejará el tráfico externo
     environment:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
     volumes:
@@ -18,8 +36,8 @@ services:
       context: ./token_api
       dockerfile: Dockerfile.token
     container_name: token-api
-    ports:
-      - "5001:5001"
+    expose:
+      - "5001"
     environment:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - ALGORITHM=${ALGORITHM}
@@ -38,8 +56,8 @@ services:
         MCP_PORT: 8000
         CONFIG_FILE: config.yaml
     container_name: manufacturing-mcp
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     env_file:
       - .env
     environment:
@@ -61,7 +79,7 @@ services:
       - minio
     networks:
       - mcp-network
-    
+
   human-resources-mcp:
     build:
       context: .
@@ -71,8 +89,8 @@ services:
         MCP_PORT: 8001
         CONFIG_FILE: config.yaml
     container_name: hr-mcp
-    ports:
-      - "8001:8001"
+    expose:
+      - "8001"
     env_file:
       - .env
     environment:
