@@ -8,9 +8,8 @@ from common.minio_utils import MinioClient
 from common.qdrant_utils import QdrantManager
 from common.auth_utils import AuthClient
 from common.encryption_utils import EncryptionManager
-from data_validators import DataValidator
 from qdrant_client.http import models
-from utils import expand_env_vars
+from utils import expand_env_vars, DataValidator
 import os
 import inspect
 

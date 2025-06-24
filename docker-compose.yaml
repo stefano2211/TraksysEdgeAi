@@ -88,7 +88,7 @@ services:
         MCP_NAME: human-resources
         MCP_PORT: 8001
         CONFIG_FILE: config.yaml
-    container_name: hr-mcp
+    container_name: human-resources-mcp
     expose:
       - "8001"
     env_file:

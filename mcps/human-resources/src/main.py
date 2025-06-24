@@ -8,7 +8,7 @@ from common.minio_utils import MinioClient
 from common.qdrant_utils import QdrantManager
 from common.auth_utils import AuthClient
 from common.encryption_utils import EncryptionManager
-from data_validator import DataValidator
+from utils import DataValidator, expand_env_vars
 from qdrant_client.http import models
 import os
 import inspect
@@ -16,15 +16,6 @@ import inspect
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def expand_env_vars(obj):
-    if isinstance(obj, dict):
-        return {k: expand_env_vars(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [expand_env_vars(i) for i in obj]
-    elif isinstance(obj, str):
-        return os.path.expandvars(obj)
-    else:
-        return obj
 
 with open("/app/config.yaml", "r") as f:
     config = yaml.safe_load(f)
@@ -58,7 +49,7 @@ encryption_manager = EncryptionManager(
     os.getenv("ENCRYPTION_KEY")
 )
 
-@mcp.tool()
+
 def fetch_hr_data(
     ctx: Context,
     key_values: Optional[Dict[str, str]] = None,
