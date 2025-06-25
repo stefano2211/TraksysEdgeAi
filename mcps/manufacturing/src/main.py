@@ -16,8 +16,6 @@ import inspect
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-
 with open("/app/config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
@@ -38,7 +36,6 @@ qdrant_manager = QdrantManager(
     host=os.getenv("QDRANT_HOST"),
     port=int(os.getenv("QDRANT_PORT"))
 )
-# Inicializar solo las colecciones necesarias, excluyendo custom_rules
 for collection in config["qdrant"]["collections"]:
     if collection != "custom_rules":
         qdrant_manager.initialize_collection(collection)
@@ -51,7 +48,6 @@ auth_client = AuthClient(
 encryption_manager = EncryptionManager(
     os.getenv("ENCRYPTION_KEY")
 )
-
 
 def fetch_mes_data(
     ctx: Context,
@@ -253,7 +249,7 @@ def fetch_mes_data(
 
 @mcp.tool()
 def get_pdf_content(ctx: Context, filename: str) -> str:
-    """"Recupera el contenido de un archivo PDF almacenado en MinIO.
+    """Recupera el contenido de un archivo PDF almacenado en MinIO.
     Args:
         ctx (Context): Contexto de la solicitud proporcionado por el MCP.
         filename (str): Nombre del archivo PDF a recuperar.
@@ -422,7 +418,7 @@ def analyze_compliance(
 
         fields_info = DataValidator.validate_fields(ctx, key_figures, key_values, start_date, end_date, specific_dates)
         valid_values = fields_info["key_values"]
-        logger.info(f"Analyzing compliance: key_figures={key_figures}, key_values={key_values}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
+        logger.info(f"Analyzing data: key_figures={key_figures}, key_values={key_values}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
         identifier_field = None
         identifier_value = None
         if valid_values:
@@ -474,11 +470,7 @@ def analyze_compliance(
             analysis = {
                 "date": record.get("date", "Desconocida"),
                 **{k: record.get(k) for k in key_values},
-                "metrics": {k: record[k] for k in key_figures if k in record},
-                "compliance_status": {
-                    k: "Compliant" if k == "temperature" and record.get(k, float('inf')) <= 74.0 else "Non-compliant"
-                    for k in key_figures if k in record
-                }
+                "metrics": {k: record[k] for k in key_figures if k in record}
             }
             results.append(analysis)
         analysis_notes.append(f"Filtered data for {key_values}")

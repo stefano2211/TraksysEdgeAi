@@ -8,14 +8,13 @@ from common.minio_utils import MinioClient
 from common.qdrant_utils import QdrantManager
 from common.auth_utils import AuthClient
 from common.encryption_utils import EncryptionManager
-from utils import DataValidator, expand_env_vars
 from qdrant_client.http import models
+from utils import expand_env_vars, DataValidator
 import os
 import inspect
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 with open("/app/config.yaml", "r") as f:
     config = yaml.safe_load(f)
@@ -48,7 +47,6 @@ auth_client = AuthClient(
 encryption_manager = EncryptionManager(
     os.getenv("ENCRYPTION_KEY")
 )
-
 
 def fetch_hr_data(
     ctx: Context,
@@ -411,7 +409,7 @@ def analyze_compliance(
 
         fields_info = DataValidator.validate_fields(ctx, key_figures, key_values, start_date, end_date, specific_dates)
         valid_values = fields_info["key_values"]
-        logger.info(f"Analyzing compliance: key_figures={key_figures}, key_values={key_values}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
+        logger.info(f"Analyzing data: key_figures={key_figures}, key_values={key_values}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
         identifier_field = None
         identifier_value = None
         if valid_values:
@@ -463,11 +461,7 @@ def analyze_compliance(
             analysis = {
                 "date": record.get("date", "Desconocida"),
                 **{k: record.get(k) for k in key_values},
-                "metrics": {k: record[k] for k in key_figures if k in record},
-                "compliance_status": {
-                    k: "Compliant" if k == "hours_worked" and record.get(k, 0) >= 8.0 else "Non-compliant"
-                    for k in key_figures if k in record
-                }
+                "metrics": {k: record[k] for k in key_figures if k in record}
             }
             results.append(analysis)
         analysis_notes.append(f"Filtered data for {key_values}")
