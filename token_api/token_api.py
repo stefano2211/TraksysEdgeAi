@@ -49,6 +49,10 @@ async def startup_event():
     """Ejecuta la inicialización de la base de datos al iniciar la aplicación."""
     init_db()
 
+@app.get("/")
+async def root():
+    return {"message": "Token API running"}
+
 # Endpoint para almacenar token
 @app.post("/store-token")
 async def store_token(request: TokenRequest):
