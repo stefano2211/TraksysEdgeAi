@@ -69,55 +69,23 @@ def fetch_hr_data(
                     "covered_dates": []
                 }, ensure_ascii=False)
             key_figures = fields_info["key_figures"]
-            logger.info(f"No key_figures provided, using all numeric fields: {key_figures}")
         else:
             key_figures = key_figures or []
 
         fields_info = DataValidator.validate_fields(ctx, key_figures, key_values, start_date, end_date, specific_dates)
-        logger.info(f"Fetching HR data for key_values={key_values}, key_figures={key_figures}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
         must_conditions = []
         for k, v in key_values.items():
             must_conditions.append(models.FieldCondition(key=k, match=models.MatchValue(value=v)))
-        if specific_dates:
-            normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
-            if not normalized_dates:
-                return json.dumps({
-                    "status": "error",
-                    "message": "No se proporcionaron fechas válidas en specific_dates",
-                    "count": 0,
-                    "data": [],
-                    "covered_dates": []
-                }, ensure_ascii=False)
-            must_conditions.append(models.FieldCondition(
-                key="date",
-                match=models.MatchAny(any=normalized_dates)
-            ))
-        elif start_date and end_date:
-            start = datetime.strptime(start_date, "%Y-%m-%d")
-            end = datetime.strptime(end_date, "%Y-%m-%d")
-            delta = (end - start).days + 1
-            if delta <= 0:
-                return json.dumps({
-                    "status": "error",
-                    "message": "El rango de fechas es inválido",
-                    "count": 0,
-                    "data": [],
-                    "covered_dates": []
-                }, ensure_ascii=False)
-            date_range = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(delta)]
-            must_conditions.append(models.FieldCondition(
-                key="date",
-                match=models.MatchAny(any=date_range)
-            ))
 
+        # Obtener datos crudos para identificar el campo de fecha
         processed_data = []
         collection_name = config["qdrant"]["collections"][0] if not config["data_source"]["use_minio_logs"] else config["qdrant"]["collections"][2]
         if config["data_source"]["use_minio_logs"]:
-            all_data = minio_client.get_all_json_logs(bucket_name=config["minio"]["hr_logs_bucket"])
+            all_data = minio_client.get_all_json_logs()
             if not all_data:
                 return json.dumps({
                     "status": "no_data",
-                    "message": f"No se encontraron datos en el bucket {config['minio']['hr_logs_bucket']}",
+                    "message": f"No se encontraron datos en el bucket {config['minio']['mes_logs_bucket']}",
                     "count": 0,
                     "data": [],
                     "covered_dates": []
@@ -125,33 +93,12 @@ def fetch_hr_data(
             full_data = []
             for record in all_data:
                 if all(record.get(k) == v for k, v in key_values.items()):
-                    item = {"date": DataValidator.detect_and_normalize_date(record.get("date", "")) or "Desconocida"}
+                    date_field = DataValidator.identify_date_field([record])
+                    item = {"date": DataValidator.detect_and_normalize_date(record, date_field) or "Desconocida"}
                     for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
                         if field in record:
                             item[field] = record[field]
                     full_data.append(item)
-            if full_data and specific_dates:
-                normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
-                full_data = [r for r in full_data if r.get("date") in normalized_dates]
-            elif full_data and start_date and end_date:
-                start = datetime.strptime(start_date, "%Y-%m-%d")
-                end = datetime.strptime(end_date, "%Y-%m-%d")
-                delta = (end - start).days + 1
-                for i, record in enumerate(full_data):
-                    if record["date"] == "Desconocida":
-                        record["date"] = (start + timedelta(days=i % delta)).strftime("%Y-%m-%d")
-            if full_data:
-                points = []
-                for r in full_data:
-                    encrypted_payload = encryption_manager.encrypt_data(r)
-                    point = models.PointStruct(
-                        id=encryption_manager.generate_id(r),
-                        vector=qdrant_manager.model.encode(json.dumps(r)).tolist(),
-                        payload={"encrypted_payload": encrypted_payload}
-                    )
-                    points.append(point)
-                qdrant_manager.upsert_data(collection_name, points)
-                logger.info(f"Stored {len(points)} encrypted points in Qdrant {collection_name}")
             processed_data = full_data
         else:
             qdrant_results = qdrant_manager.scroll_data(
@@ -164,8 +111,6 @@ def fetch_hr_data(
                 if encrypted_payload:
                     decrypted_data = encryption_manager.decrypt_data(encrypted_payload)
                     processed_data.append(decrypted_data)
-                else:
-                    logger.warning(f"No encrypted payload for point {r.id}")
             if not processed_data:
                 params = {}
                 if specific_dates:
@@ -178,33 +123,12 @@ def fetch_hr_data(
                 full_data = []
                 for record in all_data:
                     if all(record.get(k) == v for k, v in key_values.items()):
-                        item = {"date": DataValidator.detect_and_normalize_date(record.get("date", "")) or "Desconocida"}
+                        date_field = DataValidator.identify_date_field([record])
+                        item = {"date": DataValidator.detect_and_normalize_date(record, date_field) or "Desconocida"}
                         for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
                             if field in record:
                                 item[field] = record[field]
                         full_data.append(item)
-                if full_data and specific_dates:
-                    normalized_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
-                    full_data = [r for r in full_data if r.get("date") in normalized_dates]
-                elif full_data and start_date and end_date:
-                    start = datetime.strptime(start_date, "%Y-%m-%d")
-                    end = datetime.strptime(end_date, "%Y-%m-%d")
-                    delta = (end - start).days + 1
-                    for i, record in enumerate(full_data):
-                        if record["date"] == "Desconocida":
-                            record["date"] = (start + timedelta(days=i % delta)).strftime("%Y-%m-%d")
-                if full_data:
-                    points = []
-                    for r in full_data:
-                        encrypted_payload = encryption_manager.encrypt_data(r)
-                        point = models.PointStruct(
-                            id=encryption_manager.generate_id(r),
-                            vector=qdrant_manager.model.encode(json.dumps(r)).tolist(),
-                            payload={"encrypted_payload": encrypted_payload}
-                        )
-                        points.append(point)
-                    qdrant_manager.upsert_data(collection_name, points)
-                    logger.info(f"Stored {len(points)} encrypted points in Qdrant {collection_name}")
                 processed_data = full_data
 
         if processed_data:
@@ -212,7 +136,6 @@ def fetch_hr_data(
                 r for r in processed_data
                 if all(r.get(k) == v for k, v in key_values.items())
             ]
-            logger.info(f"Filtered {len(processed_data)} records in memory for {key_values}")
         if key_figures:
             missing_figures = [k for k in key_figures if not any(k in r for r in processed_data)]
             if missing_figures:

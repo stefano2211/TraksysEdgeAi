@@ -8,6 +8,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
+
 class DataValidator:
     DATE_FORMATS = [
         "%Y-%m-%d", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y", "%Y%m%d",
@@ -16,7 +17,31 @@ class DataValidator:
     ]
 
     @staticmethod
-    def detect_and_normalize_date(date_str: str) -> Optional[str]:
+    def identify_date_field(data: List[Dict]) -> str:
+        """Identifica dinámicamente el campo de fecha en los datos."""
+        if not data or not isinstance(data, list) or not data[0]:
+            return "date"  # Fallback a "date" si no hay datos
+        for record in data[:min(5, len(data))]:  # Revisa hasta 5 registros
+            for field, value in record.items():
+                if isinstance(value, str) and value.strip():
+                    for fmt in DataValidator.DATE_FORMATS:
+                        try:
+                            datetime.strptime(value.strip(), fmt)
+                            return field  # Retorna el primer campo que parece una fecha
+                        except ValueError:
+                            continue
+        return "date"  # Fallback si no se encuentra un campo de fecha válido
+
+    @staticmethod
+    def detect_and_normalize_date(data_or_str: str | Dict, field_name: Optional[str] = None) -> Optional[str]:
+        """Normaliza una cadena de fecha o busca la fecha en un diccionario de datos."""
+        if isinstance(data_or_str, dict):
+            if not field_name:
+                raise ValueError("field_name is required when passing a dictionary")
+            date_str = data_or_str.get(field_name)
+        else:
+            date_str = data_or_str
+
         if not isinstance(date_str, str) or not date_str.strip():
             return None
         for fmt in DataValidator.DATE_FORMATS:
@@ -32,6 +57,7 @@ class DataValidator:
 
     @staticmethod
     def validate_date(date_str: str, field: str) -> str:
+        """Valida y normaliza una fecha específica."""
         normalized_date = DataValidator.detect_and_normalize_date(date_str)
         if not normalized_date:
             raise ValueError(f"Invalid format for {field}: {date_str}")
@@ -39,6 +65,7 @@ class DataValidator:
 
     @staticmethod
     def check_date_coverage(data: List[Dict], start_date: Optional[str], end_date: Optional[str], specific_dates: Optional[List[str]] = None) -> Dict:
+        """Verifica la cobertura de fechas en los datos."""
         if not data:
             message = "No records found."
             if specific_dates:
@@ -47,7 +74,15 @@ class DataValidator:
                 message = f"No records from {start_date} to {end_date}"
             return {"has_data": False, "covered_dates": [], "message": message}
 
-        covered_dates = sorted(set(r["date"] for r in data if r.get("date") and r["date"] != "Desconocida"))
+        # Identificar el campo de fecha dinámicamente
+        date_field = DataValidator.identify_date_field(data)
+        covered_dates = sorted(set(
+            DataValidator.detect_and_normalize_date(r.get(date_field, "")) or "Desconocida"
+            for r in data
+            if r.get(date_field)
+        ))
+        covered_dates = [d for d in covered_dates if d != "Desconocida"]
+
         if specific_dates:
             expected_dates = [DataValidator.validate_date(d, "specific_date") for d in specific_dates]
             missing_dates = [d for d in expected_dates if d not in covered_dates]
@@ -66,6 +101,7 @@ class DataValidator:
 
     @staticmethod
     def validate_fields(ctx: Context, key_figures: List[str], key_values: Dict, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> Dict:
+        """Valida los campos proporcionados contra los campos disponibles."""
         from main import list_fields  # Importar aquí para evitar circularidad
         fields_info = json.loads(list_fields(ctx))
         if fields_info["status"] != "success":
