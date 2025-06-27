@@ -136,8 +136,8 @@ services:
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
-    ports:
-      - "3001:8080"
+    expose:
+      - "8080"
     environment:
       - OLLAMA_API_BASE_URL=${OLLAMA_API_BASE_URL}
     volumes:

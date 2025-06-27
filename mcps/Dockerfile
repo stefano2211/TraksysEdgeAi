@@ -31,6 +31,7 @@ ENV PYTHONPATH=/app:${PYTHONPATH}
 # Exponer puerto dinámico
 ARG MCP_PORT
 EXPOSE ${MCP_PORT}
+RUN pip install "mcp[cli]"==1.9.4, mcpo==0.0.14
 
 # Comando para ejecutar el MCP
-CMD ["sh", "-c", "pip install mcpo && mcpo --port ${MCP_PORT} -- python src/main.py"]
+CMD ["sh", "-c", "mcpo --port ${MCP_PORT} -- python src/main.py"]
