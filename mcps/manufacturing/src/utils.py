@@ -8,7 +8,6 @@ import os
 
 logger = logging.getLogger(__name__)
 
-
 class DataValidator:
     DATE_FORMATS = [
         "%Y-%m-%d", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y", "%Y%m%d",
@@ -100,7 +99,7 @@ class DataValidator:
         return {"has_data": bool(covered_dates), "covered_dates": covered_dates, "message": message}
 
     @staticmethod
-    def validate_fields(ctx: Context, key_figures: List[str], key_values: Dict, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> Dict:
+    def validate_fields(ctx: Context, key_figures: List, key_values: Dict, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> Dict:
         """Valida los campos proporcionados contra los campos disponibles."""
         from main import list_fields  # Importar aquí para evitar circularidad
         fields_info = json.loads(list_fields(ctx))
@@ -118,7 +117,23 @@ class DataValidator:
         if specific_dates:
             specific_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
         errors = []
-        invalid_figures = [f for f in key_figures if f not in fields_info["key_figures"]]
+        # Normalizar y validar key_figures
+        normalized_key_figures = []
+        for item in key_figures:
+            if isinstance(item, str):
+                normalized_key_figures.append(item)
+            elif isinstance(item, dict) and "field" in item:
+                normalized_key_figures.append(item["field"])
+                # Validar rangos
+                if "min" in item and not isinstance(item["min"], (int, float, type(None))):
+                    errors.append(f"Invalid min value for {item['field']}: must be numeric")
+                if "max" in item and not isinstance(item["max"], (int, float, type(None))):
+                    errors.append(f"Invalid max value for {item['field']}: must be numeric")
+                if "min" in item and "max" in item and item["min"] is not None and item["max"] is not None and item["min"] > item["max"]:
+                    errors.append(f"Invalid range for {item['field']}: min cannot be greater than max")
+            else:
+                errors.append(f"Invalid key_figures format: {item}")
+        invalid_figures = [f for f in normalized_key_figures if f not in fields_info["key_figures"]]
         if invalid_figures:
             errors.append(f"Invalid numeric fields: {invalid_figures}")
         for k, v in key_values.items():
@@ -127,7 +142,7 @@ class DataValidator:
         if errors:
             raise ValueError(" | ".join(errors))
         return fields_info
-    
+
 def expand_env_vars(obj):
     if isinstance(obj, dict):
         return {k: expand_env_vars(v) for k, v in obj.items()}

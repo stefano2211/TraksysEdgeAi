@@ -52,14 +52,28 @@ encryption_manager = EncryptionManager(
 def fetch_mes_data(
     ctx: Context,
     key_values: Optional[Dict[str, str]] = None,
-    key_figures: Optional[List[str]] = None,
+    key_figures: Optional[List[Dict]] = None,  # Cambiado para aceptar lista de diccionarios
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     specific_dates: Optional[List[str]] = None
 ) -> str:
     try:
         key_values = key_values or {}
-        if not key_figures:
+        # Normalizar key_figures para manejar tanto lista de strings como lista de diccionarios
+        normalized_key_figures = []
+        figure_ranges = {}
+        if key_figures:
+            for item in key_figures:
+                if isinstance(item, str):
+                    normalized_key_figures.append(item)
+                elif isinstance(item, dict) and "field" in item:
+                    normalized_key_figures.append(item["field"])
+                    if "min" in item or "max" in item:
+                        figure_ranges[item["field"]] = {
+                            "min": item.get("min", None),
+                            "max": item.get("max", None)
+                        }
+        if not normalized_key_figures:
             fields_info = json.loads(list_fields(ctx))
             if fields_info["status"] != "success":
                 return json.dumps({
@@ -69,11 +83,11 @@ def fetch_mes_data(
                     "data": [],
                     "covered_dates": []
                 }, ensure_ascii=False)
-            key_figures = fields_info["key_figures"]
+            normalized_key_figures = fields_info["key_figures"]
         else:
-            key_figures = key_figures or []
+            normalized_key_figures = normalized_key_figures or []
 
-        fields_info = DataValidator.validate_fields(ctx, key_figures, key_values, start_date, end_date, specific_dates)
+        fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates)
         must_conditions = []
         for k, v in key_values.items():
             must_conditions.append(models.FieldCondition(key=k, match=models.MatchValue(value=v)))
@@ -94,12 +108,25 @@ def fetch_mes_data(
             full_data = []
             for record in all_data:
                 if all(record.get(k) == v for k, v in key_values.items()):
-                    date_field = DataValidator.identify_date_field([record])
-                    item = {"date": DataValidator.detect_and_normalize_date(record, date_field) or "Desconocida"}
-                    for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
+                    # Aplicar filtros de rango para key_figures
+                    include_record = True
+                    for field, ranges in figure_ranges.items():
                         if field in record:
-                            item[field] = record[field]
-                    full_data.append(item)
+                            value = record[field]
+                            if isinstance(value, (int, float)):
+                                if ranges["min"] is not None and value < ranges["min"]:
+                                    include_record = False
+                                if ranges["max"] is not None and value > ranges["max"]:
+                                    include_record = False
+                            else:
+                                include_record = False
+                    if include_record:
+                        date_field = DataValidator.identify_date_field([record])
+                        item = {"date": DataValidator.detect_and_normalize_date(record, date_field) or "Desconocida"}
+                        for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
+                            if field in record:
+                                item[field] = record[field]
+                        full_data.append(item)
             processed_data = full_data
         else:
             qdrant_results = qdrant_manager.scroll_data(
@@ -111,7 +138,20 @@ def fetch_mes_data(
                 encrypted_payload = r.payload.get("encrypted_payload")
                 if encrypted_payload:
                     decrypted_data = encryption_manager.decrypt_data(encrypted_payload)
-                    processed_data.append(decrypted_data)
+                    # Aplicar filtros de rango para key_figures
+                    include_record = True
+                    for field, ranges in figure_ranges.items():
+                        if field in decrypted_data:
+                            value = decrypted_data[field]
+                            if isinstance(value, (int, float)):
+                                if ranges["min"] is not None and value < ranges["min"]:
+                                    include_record = False
+                                if ranges["max"] is not None and value > ranges["max"]:
+                                    include_record = False
+                            else:
+                                include_record = False
+                    if include_record:
+                        processed_data.append(decrypted_data)
             if not processed_data:
                 params = {}
                 if specific_dates:
@@ -124,12 +164,25 @@ def fetch_mes_data(
                 full_data = []
                 for record in all_data:
                     if all(record.get(k) == v for k, v in key_values.items()):
-                        date_field = DataValidator.identify_date_field([record])
-                        item = {"date": DataValidator.detect_and_normalize_date(record, date_field) or "Desconocida"}
-                        for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
+                        # Aplicar filtros de rango para key_figures
+                        include_record = True
+                        for field, ranges in figure_ranges.items():
                             if field in record:
-                                item[field] = record[field]
-                        full_data.append(item)
+                                value = record[field]
+                                if isinstance(value, (int, float)):
+                                    if ranges["min"] is not None and value < ranges["min"]:
+                                        include_record = False
+                                    if ranges["max"] is not None and value > ranges["max"]:
+                                        include_record = False
+                                else:
+                                    include_record = False
+                        if include_record:
+                            date_field = DataValidator.identify_date_field([record])
+                            item = {"date": DataValidator.detect_and_normalize_date(record, date_field) or "Desconocida"}
+                            for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
+                                if field in record:
+                                    item[field] = record[field]
+                            full_data.append(item)
                 processed_data = full_data
 
         if processed_data:
@@ -137,8 +190,8 @@ def fetch_mes_data(
                 r for r in processed_data
                 if all(r.get(k) == v for k, v in key_values.items())
             ]
-        if key_figures:
-            missing_figures = [k for k in key_figures if not any(k in r for r in processed_data)]
+        if normalized_key_figures:
+            missing_figures = [k for k in normalized_key_figures if not any(k in r for r in processed_data)]
             if missing_figures:
                 return json.dumps({
                     "status": "no_data",
@@ -147,7 +200,7 @@ def fetch_mes_data(
                     "message": f"No data found for fields: {', '.join(missing_figures)}.",
                     "covered_dates": []
                 }, ensure_ascii=False)
-        response_fields = ["date"] + list(key_values.keys()) + key_figures
+        response_fields = ["date"] + list(key_values.keys()) + normalized_key_figures
         response_data = [
             {k: r[k] for k in response_fields if k in r}
             for r in processed_data
@@ -219,7 +272,7 @@ def list_fields(ctx: Context) -> str:
 def analyze_compliance(
     ctx: Context,
     key_values: Optional[Dict[str, str]] = None,
-    key_figures: Optional[List[str]] = None,
+    key_figures: Optional[List[Dict]] = None,  # Cambiado para aceptar lista de diccionarios
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     specific_dates: Optional[List[str]] = None
@@ -233,7 +286,7 @@ def analyze_compliance(
     Args:
         ctx (Context): Contexto de la solicitud proporcionado por el MCP.
         key_values (Optional[Dict[str, str]]): Filtros categóricos (e.g., {"machine": "ModelA"}).
-        key_figures (Optional[List[str]]): Campos numéricos a analizar (e.g., ["temperature", "uptime"]).
+        key_figures (Optional[List[Dict]]): Campos numéricos a analizar con rangos opcionales (e.g., [{"field": "temperature", "min": 70, "max": 80}]).
         start_date (Optional[str]): Fecha de inicio para el rango de análisis (formato YYYY-MM-DD).
         end_date (Optional[str]): Fecha de fin para el rango de análisis (formato YYYY-MM-DD).
         specific_dates (Optional[List[str]]): Lista de fechas específicas para el análisis (formato YYYY-MM-DD).
@@ -254,8 +307,8 @@ def analyze_compliance(
                "<campo_categórico_2>": "<valor>"
            },
            "key_figures": [
-               "<campo_numérico_1>",
-               "<campo_numérico_2>"
+               {"field": "<campo_numérico_1>", "min": <número>, "max": <número>},
+               {"field": "<campo_numérico_2>", "min": <número>, "max": <número>}
            ],
            // Usa EITHER specific_dates OR start_date/end_date, no ambos
            "specific_dates": ["YYYY-MM-DD", ...], // Para fechas específicas
@@ -264,6 +317,7 @@ def analyze_compliance(
            "end_date": "YYYY-MM-DD"
        }
        ```
+       Nota: `min` y `max` son opcionales. Si no se especifican, se incluyen todos los valores del campo.
     4. **Cuándo usar specific_dates vs. start_date/end_date**:
        - Usa `specific_dates` cuando la consulta menciona días concretos (e.g., "solo el 9 de abril de 2025" o
          "9 y 11 de abril de 2025"). Ejemplo: `specific_dates: ["2025-04-09", "2025-04-11"]`.
@@ -283,30 +337,51 @@ def analyze_compliance(
        }
        ```
        Consultas válidas serían:
-       - Para fechas específicas:
+       - Para fechas específicas con rangos:
          ```json
          {
              "key_values": {
                  "machine": "ModelA",
                  "production_line": "Line3"
              },
-             "key_figures": ["temperature", "uptime"],
+             "key_figures": [
+                 {"field": "temperature", "min": 70, "max": 80},
+                 {"field": "uptime"}
+             ],
              "specific_dates": ["2025-04-09"]
          }
          ```
-       - Para un rango de fechas:
+       - Para un rango de fechas sin rangos:
          ```json
          {
              "key_values": {
                  "machine": "ModelA",
                  "production_line": "Line3"
              },
-             "key_figures": ["temperature", "uptime"],
+             "key_figures": [
+                 {"field": "temperature"},
+                 {"field": "uptime"}
+             ],
              "start_date": "2025-04-09",
              "end_date": "2025-04-11"
          }
          ```
-       - Para un rango de fechas sin key figures:
+       - Para un rango de fechas con multiples rangos:
+         ```json
+         {
+             "key_values": {
+                 "machine": "ModelA",
+                 "production_line": "Line3"
+             },
+             "key_figures": [
+                 {"field": "temperature", "min": 70, "max": 80},
+                 {"field": "defects", "min": 0, "max": 1},
+             ],
+             "start_date": "2025-04-09",
+             "end_date": "2025-04-11"
+         }
+         ```
+       - Para un rango de fechas sin key_figures:
          ```json
          {
              "key_values": {
@@ -322,10 +397,19 @@ def analyze_compliance(
        - Si los campos en `key_values` o `key_figures` no están en `list_fields`, ignora la consulta y devuelve un mensaje
          de error solicitando campos válidos.
        - Si las fechas proporcionadas no tienen el formato correcto (YYYY-MM-DD), solicita al usuario que las corrija.
+       - Si los rangos (`min` o `max`) no son numéricos, devuelve un error solicitando valores válidos.
     """
     try:
         key_values = key_values or {}
-        if not key_figures:
+        # Normalizar key_figures
+        normalized_key_figures = []
+        if key_figures:
+            for item in key_figures:
+                if isinstance(item, str):
+                    normalized_key_figures.append(item)
+                elif isinstance(item, dict) and "field" in item:
+                    normalized_key_figures.append(item["field"])
+        if not normalized_key_figures:
             fields_info = json.loads(list_fields(ctx))
             if fields_info["status"] != "success":
                 return json.dumps({
@@ -334,12 +418,12 @@ def analyze_compliance(
                     "results": [],
                     "analysis_notes": ["No se pudieron obtener campos válidos"]
                 }, ensure_ascii=False)
-            key_figures = fields_info["key_figures"]
-            logger.info(f"No key_figures provided, using all numeric fields: {key_figures}")
+            normalized_key_figures = fields_info["key_figures"]
+            logger.info(f"No key_figures provided, using all numeric fields: {normalized_key_figures}")
         else:
-            key_figures = key_figures or []
+            normalized_key_figures = normalized_key_figures or []
 
-        fields_info = DataValidator.validate_fields(ctx, key_figures, key_values, start_date, end_date, specific_dates)
+        fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates)
         valid_values = fields_info["key_values"]
         logger.info(f"Analyzing data: key_figures={key_figures}, key_values={key_values}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
         identifier_field = None
@@ -362,7 +446,7 @@ def analyze_compliance(
                 "message": fetch_result["message"],
                 "period": f"{start_date or 'N/A'} to {end_date or 'N/A'}" if start_date else f"Specific dates: {specific_dates or 'N/A'}",
                 "identifier": f"{identifier_field}={identifier_value}" if identifier_field and identifier_value else "all records",
-                "metrics_analyzed": key_figures,
+                "metrics_analyzed": normalized_key_figures,
                 "results": [],
                 "sop_content": {},
                 "analysis_notes": analysis_notes
@@ -393,7 +477,7 @@ def analyze_compliance(
             analysis = {
                 "date": record.get("date", "Desconocida"),
                 **{k: record.get(k) for k in key_values},
-                "metrics": {k: record[k] for k in key_figures if k in record}
+                "metrics": {k: record[k] for k in normalized_key_figures if k in record}
             }
             results.append(analysis)
         analysis_notes.append(f"Filtered data for {key_values}")
@@ -406,7 +490,7 @@ def analyze_compliance(
             "status": "success",
             "period": period,
             "identifier": f"{identifier_field}={identifier_value}" if identifier_field and identifier_value else "all records",
-            "metrics_analyzed": key_figures,
+            "metrics_analyzed": normalized_key_figures,
             "results": results,
             "sop_content": sop_content,
             "analysis_notes": analysis_notes
@@ -424,7 +508,7 @@ def analyze_compliance(
 def get_mes_dataset(
     ctx: Context,
     key_values: Optional[Dict[str, str]] = None,
-    key_figures: Optional[List[str]] = None,
+    key_figures: Optional[List[Dict]] = None,  # Cambiado para aceptar lista de diccionarios
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     specific_dates: Optional[List[str]] = None
@@ -436,23 +520,38 @@ def get_mes_dataset(
     - Antes de construir la consulta, llama a `list_fields` para obtener los campos válidos (`key_figures` y `key_values`).
     - Usa solo campos presentes en la respuesta de `list_fields`.
     - Usa `specific_dates` (lista de fechas YYYY-MM-DD) para días concretos, o `start_date` y `end_date` (YYYY-MM-DD) para rangos. No combines ambos.
+    - Para `key_figures`, acepta una lista de diccionarios con campos numéricos y rangos opcionales (e.g., [{"field": "defects", "min": 1, "max": 5}]).
     - Si los campos o fechas no son válidos, devuelve un mensaje de error solicitando corrección.
 
     Ejemplos de uso:
-    1. Fechas específicas:
+    1. Fechas específicas con rangos:
        {
            "key_values": {"machine": "ModelA"},
-           "key_figures": ["defects"],
+           "key_figures": [{"field": "defects", "min": 1, "max": 5}],
            "specific_dates": ["2025-04-09", "2025-04-11"]
        }
-    2. Rango de fechas:
+    2. Rango de fechas sin rangos:
        {
            "key_values": {"machine": "ModelA"},
-           "key_figures": ["defects"],
+           "key_figures": [{"field": "defects"}],
            "start_date": "2025-04-09",
            "end_date": "2025-04-11"
        }
-    3. Sin filtros:
+    4. Rango de fechas con multiples rangos:
+       {
+           "key_values": {"machine": "ModelA"},
+           "key_figures": [{"field": "defects", "min": 1, "max": 5}, {"field": "temperature", "min": 20}],
+           "start_date": "2025-04-09",
+           "end_date": "2025-04-11"
+       }
+    5. Rango de fechas con un rango y uno sin rango:
+         {  
+            "key_values": {"machine": "ModelA"},  
+            "key_figures": [{"field": "defects", "min": 1, "max": 5}, {"field": "temperature"}],
+            "start_date": "2025-04-09",
+            "end_date": "2025-04-11"
+         }
+    6. Sin filtros:
        {
            "key_values": {"machine": "ModelA"},
            "key_figures": [],
@@ -463,7 +562,7 @@ def get_mes_dataset(
     Args:
         ctx (Context): Contexto FastMCP.
         key_values (Optional[Dict[str, str]]): Filtros categóricos.
-        key_figures (Optional[List[str]]): Métricas numéricas.
+        key_figures (Optional[List[Dict]]): Métricas numéricas con rangos opcionales.
         start_date (Optional[str]): Fecha inicio (YYYY-MM-DD).
         end_date (Optional[str]): Fecha fin (YYYY-MM-DD).
         specific_dates (Optional[List[str]]): Lista de fechas específicas (YYYY-MM-DD).
