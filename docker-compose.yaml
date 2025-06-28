@@ -9,6 +9,8 @@ services:
       - "443:443"
     volumes:
       - ./certs:/etc/nginx/certs
+    environment:
+      - CORS_ORIGINS=${CORS_ORIGINS}
     depends_on:
       - api
       - token-api

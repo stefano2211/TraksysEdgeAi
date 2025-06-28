@@ -8,20 +8,16 @@ http {
         ssl_certificate /etc/nginx/certs/server.crt;
         ssl_certificate_key /etc/nginx/certs/server.key;
 
-        # Configuración de seguridad SSL (ampliando protocolos para depuración)
-        ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
+        # Configuración de seguridad SSL
+        ssl_protocols TLSv1.2 TLSv1.3;
         ssl_prefer_server_ciphers on;
         ssl_ciphers HIGH:!aNULL:!MD5;
-
-        # Habilitar logging detallado para SSL
-        error_log /var/log/nginx/error.log debug;
-        access_log /var/log/nginx/access.log;
 
         # Redirección de HTTP a HTTPS
         error_page 497 https://$host:$server_port$request_uri;
 
-        # Configuración global de CORS
-        add_header 'Access-Control-Allow-Origin' 'http://localhost:8080' always;
+        # Configuración global de CORS con variable de entorno
+        add_header 'Access-Control-Allow-Origin' '${CORS_ORIGINS}' always;
         add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
         add_header 'Access-Control-Allow-Headers' 'Content-Type, Authorization, X-Requested-With' always;
         add_header 'Access-Control-Max-Age' '86400' always;
@@ -29,7 +25,7 @@ http {
         location / {
             # Manejo de solicitudes OPTIONS para CORS preflight
             if ($request_method = OPTIONS) {
-                add_header 'Access-Control-Allow-Origin' 'http://localhost:8080';
+                add_header 'Access-Control-Allow-Origin' '${CORS_ORIGINS}';
                 add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS';
                 add_header 'Access-Control-Allow-Headers' 'Content-Type, Authorization, X-Requested-With';
                 add_header 'Access-Control-Max-Age' '86400';
@@ -78,7 +74,7 @@ http {
         }
 
         location /token-api/ {
-            rewrite ^/api-v(/.*)$ $1 break;  # Corrección: debería ser ^/token-api(/.*)$
+            rewrite ^/token-api(/.*)$ $1 break;
             proxy_pass http://token-api:5001;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
@@ -127,6 +123,6 @@ http {
     server {
         listen 80;
         server_name localhost;
-        return 301 https://$host:$server_port$request_uri; # Redirecciona todo el tráfico HTTP a HTTPS
+        return 301 https://$host$request_uri; # Redirecciona todo el tráfico HTTP a HTTPS
     }
 }
