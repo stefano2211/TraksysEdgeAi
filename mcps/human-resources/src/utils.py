@@ -99,7 +99,7 @@ class DataValidator:
         return {"has_data": bool(covered_dates), "covered_dates": covered_dates, "message": message}
 
     @staticmethod
-    def validate_fields(ctx: Context, key_figures: List[str], key_values: Dict, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> Dict:
+    def validate_fields(ctx: Context, key_figures: List[Dict], key_values: Dict, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> Dict:
         """Valida los campos proporcionados contra los campos disponibles."""
         from main import list_fields  # Importar aquí para evitar circularidad
         fields_info = json.loads(list_fields(ctx))
@@ -117,7 +117,21 @@ class DataValidator:
         if specific_dates:
             specific_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
         errors = []
-        invalid_figures = [f for f in key_figures if f not in fields_info["key_figures"]]
+        normalized_key_figures = []
+        for item in key_figures:
+            if isinstance(item, str):
+                normalized_key_figures.append(item)
+            elif isinstance(item, dict) and "field" in item:
+                field = item["field"]
+                normalized_key_figures.append(field)
+                if "min" in item or "max" in item:
+                    min_val = item.get("min")
+                    max_val = item.get("max")
+                    if min_val is not None and not isinstance(min_val, (int, float)):
+                        errors.append(f"Invalid min value for {field}: must be numeric")
+                    if max_val is not None and not isinstance(max_val, (int, float)):
+                        errors.append(f"Invalid max value for {field}: must be numeric")
+        invalid_figures = [f for f in normalized_key_figures if f not in fields_info["key_figures"]]
         if invalid_figures:
             errors.append(f"Invalid numeric fields: {invalid_figures}")
         for k, v in key_values.items():

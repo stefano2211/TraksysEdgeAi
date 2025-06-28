@@ -52,14 +52,13 @@ encryption_manager = EncryptionManager(
 def fetch_mes_data(
     ctx: Context,
     key_values: Optional[Dict[str, str]] = None,
-    key_figures: Optional[List[Dict]] = None,  # Cambiado para aceptar lista de diccionarios
+    key_figures: Optional[List[Dict]] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     specific_dates: Optional[List[str]] = None
 ) -> str:
     try:
         key_values = key_values or {}
-        # Normalizar key_figures para manejar tanto lista de strings como lista de diccionarios
         normalized_key_figures = []
         figure_ranges = {}
         if key_figures:
@@ -92,7 +91,6 @@ def fetch_mes_data(
         for k, v in key_values.items():
             must_conditions.append(models.FieldCondition(key=k, match=models.MatchValue(value=v)))
 
-        # Obtener datos crudos para identificar el campo de fecha
         processed_data = []
         collection_name = config["qdrant"]["collections"][0] if not config["data_source"]["use_minio_logs"] else config["qdrant"]["collections"][2]
         if config["data_source"]["use_minio_logs"]:
@@ -108,24 +106,28 @@ def fetch_mes_data(
             full_data = []
             for record in all_data:
                 if all(record.get(k) == v for k, v in key_values.items()):
-                    # Aplicar filtros de rango para key_figures
-                    include_record = True
-                    for field, ranges in figure_ranges.items():
-                        if field in record:
-                            value = record[field]
-                            if isinstance(value, (int, float)):
-                                if ranges["min"] is not None and value < ranges["min"]:
-                                    include_record = False
-                                if ranges["max"] is not None and value > ranges["max"]:
-                                    include_record = False
-                            else:
-                                include_record = False
-                    if include_record:
-                        date_field = DataValidator.identify_date_field([record])
-                        item = {"date": DataValidator.detect_and_normalize_date(record, date_field) or "Desconocida"}
+                    date_field = DataValidator.identify_date_field([record])
+                    record_date = DataValidator.detect_and_normalize_date(record, date_field)
+                    if (not specific_dates and not start_date and not end_date) or \
+                       (specific_dates and record_date in specific_dates) or \
+                       (start_date and end_date and start_date <= record_date <= end_date):
+                        # Incluir el registro si cumple con las condiciones básicas
+                        item = {"date": record_date or "Desconocida"}
                         for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
                             if field in record:
                                 item[field] = record[field]
+                        # Aplicar filtros de rango solo a los campos con rangos definidos
+                        include_field = True
+                        for field, ranges in figure_ranges.items():
+                            if field in item:
+                                value = item[field]
+                                if isinstance(value, (int, float)):
+                                    if ranges["min"] is not None and value < ranges["min"]:
+                                        item[field] = None  # Excluir solo el valor fuera de rango
+                                    if ranges["max"] is not None and value > ranges["max"]:
+                                        item[field] = None  # Excluir solo el valor fuera de rango
+                                else:
+                                    item[field] = None
                         full_data.append(item)
             processed_data = full_data
         else:
@@ -138,20 +140,29 @@ def fetch_mes_data(
                 encrypted_payload = r.payload.get("encrypted_payload")
                 if encrypted_payload:
                     decrypted_data = encryption_manager.decrypt_data(encrypted_payload)
-                    # Aplicar filtros de rango para key_figures
-                    include_record = True
-                    for field, ranges in figure_ranges.items():
-                        if field in decrypted_data:
-                            value = decrypted_data[field]
-                            if isinstance(value, (int, float)):
-                                if ranges["min"] is not None and value < ranges["min"]:
-                                    include_record = False
-                                if ranges["max"] is not None and value > ranges["max"]:
-                                    include_record = False
-                            else:
-                                include_record = False
-                    if include_record:
-                        processed_data.append(decrypted_data)
+                    date_field = DataValidator.identify_date_field([decrypted_data])
+                    record_date = DataValidator.detect_and_normalize_date(decrypted_data, date_field)
+                    if (not specific_dates and not start_date and not end_date) or \
+                       (specific_dates and record_date in specific_dates) or \
+                       (start_date and end_date and start_date <= record_date <= end_date):
+                        # Incluir el registro si cumple con las condiciones básicas
+                        item = {}
+                        for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
+                            if field in decrypted_data:
+                                item[field] = decrypted_data[field]
+                        item["date"] = record_date or "Desconocida"
+                        # Aplicar filtros de rango solo a los campos con rangos definidos
+                        for field, ranges in figure_ranges.items():
+                            if field in item:
+                                value = item[field]
+                                if isinstance(value, (int, float)):
+                                    if ranges["min"] is not None and value < ranges["min"]:
+                                        item[field] = None  # Excluir solo el valor fuera de rango
+                                    if ranges["max"] is not None and value > ranges["max"]:
+                                        item[field] = None  # Excluir solo el valor fuera de rango
+                                else:
+                                    item[field] = None
+                        processed_data.append(item)
             if not processed_data:
                 params = {}
                 if specific_dates:
@@ -164,24 +175,27 @@ def fetch_mes_data(
                 full_data = []
                 for record in all_data:
                     if all(record.get(k) == v for k, v in key_values.items()):
-                        # Aplicar filtros de rango para key_figures
-                        include_record = True
-                        for field, ranges in figure_ranges.items():
-                            if field in record:
-                                value = record[field]
-                                if isinstance(value, (int, float)):
-                                    if ranges["min"] is not None and value < ranges["min"]:
-                                        include_record = False
-                                    if ranges["max"] is not None and value > ranges["max"]:
-                                        include_record = False
-                                else:
-                                    include_record = False
-                        if include_record:
-                            date_field = DataValidator.identify_date_field([record])
-                            item = {"date": DataValidator.detect_and_normalize_date(record, date_field) or "Desconocida"}
+                        date_field = DataValidator.identify_date_field([record])
+                        record_date = DataValidator.detect_and_normalize_date(record, date_field)
+                        if (not specific_dates and not start_date and not end_date) or \
+                           (specific_dates and record_date in specific_dates) or \
+                           (start_date and end_date and start_date <= record_date <= end_date):
+                            # Incluir el registro si cumple con las condiciones básicas
+                            item = {"date": record_date or "Desconocida"}
                             for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
                                 if field in record:
                                     item[field] = record[field]
+                            # Aplicar filtros de rango solo a los campos con rangos definidos
+                            for field, ranges in figure_ranges.items():
+                                if field in item:
+                                    value = item[field]
+                                    if isinstance(value, (int, float)):
+                                        if ranges["min"] is not None and value < ranges["min"]:
+                                            item[field] = None  # Excluir solo el valor fuera de rango
+                                        if ranges["max"] is not None and value > ranges["max"]:
+                                            item[field] = None  # Excluir solo el valor fuera de rango
+                                    else:
+                                        item[field] = None
                             full_data.append(item)
                 processed_data = full_data
 
@@ -202,7 +216,7 @@ def fetch_mes_data(
                 }, ensure_ascii=False)
         response_fields = ["date"] + list(key_values.keys()) + normalized_key_figures
         response_data = [
-            {k: r[k] for k in response_fields if k in r}
+            {k: r[k] for k in response_fields if k in r and r[k] is not None}
             for r in processed_data
         ]
         coverage = DataValidator.check_date_coverage(response_data, start_date, end_date, specific_dates)
@@ -272,7 +286,7 @@ def list_fields(ctx: Context) -> str:
 def analyze_compliance(
     ctx: Context,
     key_values: Optional[Dict[str, str]] = None,
-    key_figures: Optional[List[Dict]] = None,  # Cambiado para aceptar lista de diccionarios
+    key_figures: Optional[List[Dict]] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     specific_dates: Optional[List[str]] = None
@@ -401,7 +415,6 @@ def analyze_compliance(
     """
     try:
         key_values = key_values or {}
-        # Normalizar key_figures
         normalized_key_figures = []
         if key_figures:
             for item in key_figures:
@@ -477,7 +490,7 @@ def analyze_compliance(
             analysis = {
                 "date": record.get("date", "Desconocida"),
                 **{k: record.get(k) for k in key_values},
-                "metrics": {k: record[k] for k in normalized_key_figures if k in record}
+                "metrics": {k: record[k] for k in normalized_key_figures if k in record and record[k] is not None}
             }
             results.append(analysis)
         analysis_notes.append(f"Filtered data for {key_values}")
@@ -508,7 +521,7 @@ def analyze_compliance(
 def get_mes_dataset(
     ctx: Context,
     key_values: Optional[Dict[str, str]] = None,
-    key_figures: Optional[List[Dict]] = None,  # Cambiado para aceptar lista de diccionarios
+    key_figures: Optional[List[Dict]] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     specific_dates: Optional[List[str]] = None
