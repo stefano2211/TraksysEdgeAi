@@ -20,35 +20,40 @@ El proyecto está compuesto por varios microservicios:
 - **NGINX**: actúa como proxy inverso, maneja CORS, SSL y enruta el tráfico a los servicios internos.
 - **MinIO** y **Qdrant** (no incluidos aquí): almacenamiento de archivos y vectorial, respectivamente.
 
-## Estructura de Carpetas y Archivos
+## Estructura de Carpetas y Archivos (adaptada a este proyecto)
 
-- `docker-compose.yaml`: Orquesta todos los servicios (API, token, MCPs, NGINX, etc.)
-- `Dockerfile.nginx`: Dockerfile para construir la imagen de NGINX personalizada.
-- `generate_nginx_conf.sh`: Script para generar dinámicamente la configuración de NGINX usando variables de entorno (CORS, etc.).
-- `nginx.conf` y `nginx.conf.template`: Configuración de NGINX (la plantilla usa variables de entorno para CORS).
-- `certs/`: Certificados SSL para NGINX.
-- `common/`: Código compartido entre microservicios (autenticación, cifrado, utilidades MinIO y Qdrant).
-  - `auth_utils.py`: Utilidades para autenticación y validación de tokens.
-  - `encryption_utils.py`: Funciones para cifrado y descifrado de datos.
-  - `minio_utils.py`: Funciones para interactuar con MinIO (almacenamiento de archivos).
-  - `qdrant_utils.py`: Funciones para interactuar con Qdrant (almacenamiento vectorial).
-  - `requirements.txt`: Dependencias Python comunes.
-- `api/`: Servicio API principal simula Traksys.
+- `docker-compose.yaml`: Orquesta todos los servicios (API, token, MCPs, NGINX, etc.).
+- `Dockerfile.nginx`: Dockerfile para construir la imagen personalizada de NGINX.
+- `generate_nginx_conf.sh`: Script para generar dinámicamente la configuración de NGINX usando variables de entorno.
+- `nginx.conf` y `nginx.conf.template`: Configuración y plantilla de NGINX.
+- `certs/`: Certificados SSL para NGINX (`server.crt`, `server.key`).
+- `common/`: Código Python compartido entre microservicios.
+  - `auth_utils.py`: Utilidades de autenticación y validación de tokens.
+  - `encryption_utils.py`: Funciones de cifrado y descifrado.
+  - `minio_utils.py`: Funciones para interactuar con MinIO.
+  - `qdrant_utils.py`: Funciones para interactuar con Qdrant.
+  - `requirements.txt`: Dependencias comunes de Python.
+- `api/`: Servicio API principal.
   - `app.py`: Código principal de la API.
   - `Dockerfile.api`: Dockerfile para la API.
   - `requirements.txt`: Dependencias de la API.
-- `token_api/`: Servicio de autenticación para utenticarse en la api.
+- `token_api/`: Servicio de autenticación y emisión de tokens.
   - `token_api.py`: Código principal del servicio de tokens.
   - `Dockerfile.token`: Dockerfile para el servicio de tokens.
   - `requirements.txt`: Dependencias del servicio de tokens.
-- `mcps/`: Microservicios MCP (Model Context Protocol) para distintos dominios.
-  - `human-resources/`: Lógica de cumplimiento y análisis de RRHH.
-    - `config.yaml`: Configuración específica del microservicio.
+- `mcps/`: Microservicios MCP para distintos dominios.
+  - `human-resources/`: Microservicio de Recursos Humanos.
+    - `config.yaml`: Configuración específica.
     - `requirements.txt`: Dependencias.
     - `src/`: Código fuente.
-      - `main.py`: Lógica principal de análisis, validación y exposición de herramientas MCP.
-      - `utils.py`: Utilidades específicas del dominio.
-  - `manufacturing/`: Lógica de cumplimiento y análisis de manufactura (estructura similar a RRHH).
+      - `main.py`: Lógica principal.
+      - `utils.py`: Utilidades del dominio.
+  - `manufacturing/`: Microservicio de Manufactura.
+    - `config.yaml`: Configuración específica.
+    - `requirements.txt`: Dependencias.
+    - `src/`: Código fuente.
+      - `main.py`: Lógica principal.
+      - `utils.py`: Utilidades del dominio.
 
 ## Cómo Ejecutar el Proyecto
 
