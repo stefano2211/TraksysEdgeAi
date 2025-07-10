@@ -6,5 +6,3 @@ api:
 minio:
   bucket: hr-documents
   hr_logs_bucket: hr-logs
-qdrant:
-  collections: ["hr_logs", "hr_documents", "hr_json_logs"]

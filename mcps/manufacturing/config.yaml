@@ -6,5 +6,3 @@ api:
 minio:
   bucket: sop-pdfs
   mes_logs_bucket: mes-logs
-qdrant:
-  collections: ["mes_logs", "sop_pdfs", "mes_json_logs"]

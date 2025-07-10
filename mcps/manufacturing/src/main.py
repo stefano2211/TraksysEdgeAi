@@ -5,10 +5,8 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from mcp.server.fastmcp import FastMCP, Context
 from common.minio_utils import MinioClient
-from common.qdrant_utils import QdrantManager
 from common.auth_utils import AuthClient
 from common.encryption_utils import EncryptionManager
-from qdrant_client.http import models
 from utils import expand_env_vars, DataValidator
 import os
 import inspect
@@ -31,14 +29,6 @@ minio_client = MinioClient(
     secure=os.getenv("MINIO_SECURE", "false").lower() == "true"
 )
 minio_client.ensure_bucket(config["minio"]["bucket"], config["minio"]["mes_logs_bucket"])
-
-qdrant_manager = QdrantManager(
-    host=os.getenv("QDRANT_HOST"),
-    port=int(os.getenv("QDRANT_PORT"))
-)
-for collection in config["qdrant"]["collections"]:
-    if collection != "custom_rules":
-        qdrant_manager.initialize_collection(collection)
 
 auth_client = AuthClient(
     api_url=config["api"]["url"],
@@ -87,12 +77,7 @@ def fetch_mes_data(
             normalized_key_figures = normalized_key_figures or []
 
         fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates)
-        must_conditions = []
-        for k, v in key_values.items():
-            must_conditions.append(models.FieldCondition(key=k, match=models.MatchValue(value=v)))
-
         processed_data = []
-        collection_name = config["qdrant"]["collections"][0] if not config["data_source"]["use_minio_logs"] else config["qdrant"]["collections"][2]
         if config["data_source"]["use_minio_logs"]:
             all_data = minio_client.get_all_json_logs()
             if not all_data:
@@ -111,93 +96,56 @@ def fetch_mes_data(
                     if (not specific_dates and not start_date and not end_date) or \
                        (specific_dates and record_date in specific_dates) or \
                        (start_date and end_date and start_date <= record_date <= end_date):
-                        # Incluir el registro si cumple con las condiciones básicas
                         item = {"date": record_date or "Desconocida"}
                         for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
                             if field in record:
                                 item[field] = record[field]
-                        # Aplicar filtros de rango solo a los campos con rangos definidos
                         include_field = True
                         for field, ranges in figure_ranges.items():
                             if field in item:
                                 value = item[field]
                                 if isinstance(value, (int, float)):
                                     if ranges["min"] is not None and value < ranges["min"]:
-                                        item[field] = None  # Excluir solo el valor fuera de rango
+                                        item[field] = None
                                     if ranges["max"] is not None and value > ranges["max"]:
-                                        item[field] = None  # Excluir solo el valor fuera de rango
+                                        item[field] = None
                                 else:
                                     item[field] = None
                         full_data.append(item)
             processed_data = full_data
         else:
-            qdrant_results = qdrant_manager.scroll_data(
-                collection_name=collection_name,
-                filter_conditions=models.Filter(must=must_conditions) if must_conditions else None,
-                limit=1000
-            )
-            for r in qdrant_results:
-                encrypted_payload = r.payload.get("encrypted_payload")
-                if encrypted_payload:
-                    decrypted_data = encryption_manager.decrypt_data(encrypted_payload)
-                    date_field = DataValidator.identify_date_field([decrypted_data])
-                    record_date = DataValidator.detect_and_normalize_date(decrypted_data, date_field)
+            params = {}
+            if specific_dates:
+                params["specific_date"] = specific_dates[0]
+            elif start_date and end_date:
+                params.update({"start_date": start_date, "end_date": end_date})
+            response = auth_client.get("/machines/", params=params)
+            response.raise_for_status()
+            all_data = response.json()
+            full_data = []
+            for record in all_data:
+                if all(record.get(k) == v for k, v in key_values.items()):
+                    date_field = DataValidator.identify_date_field([record])
+                    record_date = DataValidator.detect_and_normalize_date(record, date_field)
                     if (not specific_dates and not start_date and not end_date) or \
                        (specific_dates and record_date in specific_dates) or \
                        (start_date and end_date and start_date <= record_date <= end_date):
-                        # Incluir el registro si cumple con las condiciones básicas
-                        item = {}
+                        item = {"date": record_date or "Desconocida"}
                         for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
-                            if field in decrypted_data:
-                                item[field] = decrypted_data[field]
-                        item["date"] = record_date or "Desconocida"
-                        # Aplicar filtros de rango solo a los campos con rangos definidos
+                            if field in record:
+                                item[field] = record[field]
                         for field, ranges in figure_ranges.items():
                             if field in item:
                                 value = item[field]
                                 if isinstance(value, (int, float)):
                                     if ranges["min"] is not None and value < ranges["min"]:
-                                        item[field] = None  # Excluir solo el valor fuera de rango
+                                        item[field] = None
                                     if ranges["max"] is not None and value > ranges["max"]:
-                                        item[field] = None  # Excluir solo el valor fuera de rango
+                                        item[field] = None
                                 else:
                                     item[field] = None
-                        processed_data.append(item)
-            if not processed_data:
-                params = {}
-                if specific_dates:
-                    params["specific_date"] = specific_dates[0]
-                elif start_date and end_date:
-                    params.update({"start_date": start_date, "end_date": end_date})
-                response = auth_client.get("/machines/", params=params)
-                response.raise_for_status()
-                all_data = response.json()
-                full_data = []
-                for record in all_data:
-                    if all(record.get(k) == v for k, v in key_values.items()):
-                        date_field = DataValidator.identify_date_field([record])
-                        record_date = DataValidator.detect_and_normalize_date(record, date_field)
-                        if (not specific_dates and not start_date and not end_date) or \
-                           (specific_dates and record_date in specific_dates) or \
-                           (start_date and end_date and start_date <= record_date <= end_date):
-                            # Incluir el registro si cumple con las condiciones básicas
-                            item = {"date": record_date or "Desconocida"}
-                            for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
-                                if field in record:
-                                    item[field] = record[field]
-                            # Aplicar filtros de rango solo a los campos con rangos definidos
-                            for field, ranges in figure_ranges.items():
-                                if field in item:
-                                    value = item[field]
-                                    if isinstance(value, (int, float)):
-                                        if ranges["min"] is not None and value < ranges["min"]:
-                                            item[field] = None  # Excluir solo el valor fuera de rango
-                                        if ranges["max"] is not None and value > ranges["max"]:
-                                            item[field] = None  # Excluir solo el valor fuera de rango
-                                    else:
-                                        item[field] = None
-                            full_data.append(item)
-                processed_data = full_data
+                        full_data.append(item)
+            processed_data = full_data
 
         if processed_data:
             processed_data = [
@@ -236,14 +184,10 @@ def fetch_mes_data(
             "data": [],
             "covered_dates": []
         }, ensure_ascii=False)
-    
+
 @mcp.tool()
 def get_pdf_content(ctx: Context, filename: str) -> str:
-    """Recupera el contenido de un archivo PDF almacenado en MinIO.
-    Args:
-        ctx (Context): Contexto de la solicitud proporcionado por el MCP.
-        filename (str): Nombre del archivo PDF a recuperar.
-    """
+    """Recupera el contenido de un archivo PDF almacenado en MinIO."""
     return minio_client.get_pdf_content(filename)
 
 @mcp.tool()
@@ -596,11 +540,7 @@ def get_mes_dataset(
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
     """
-    Lista las herramientas disponibles en el MCP, incluyendo las definidas por el usuario y las internas de FastMCP.
-    INSTRUCCIONES PARA EL LLM:
-    - Esta función devuelve un JSON con el nombre, descripción y parámetros de cada herramienta.
-    - Si no hay herramientas disponibles, devuelve un mensaje indicando que no se encontraron herramientas.
-    - Si ocurre un error al listar las herramientas, devuelve un mensaje de error.
+    Lista las herramientas disponibles en el MCP.
     """
     try:
         tools = []

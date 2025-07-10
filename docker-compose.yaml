@@ -67,8 +67,6 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
       - MINIO_SECURE=${MINIO_SECURE}
-      - QDRANT_HOST=${QDRANT_HOST}
-      - QDRANT_PORT=${QDRANT_PORT}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - API_URL=${API_URL}
       - TOKEN_API_URL=${TOKEN_API_URL}
@@ -76,7 +74,6 @@ services:
     depends_on:
       - api
       - token-api
-      - qdrant
       - ollama
       - minio
     networks:
@@ -100,8 +97,6 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
       - MINIO_SECURE=${MINIO_SECURE}
-      - QDRANT_HOST=${QDRANT_HOST}
-      - QDRANT_PORT=${QDRANT_PORT}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - API_URL=${API_URL}
       - TOKEN_API_URL=${TOKEN_API_URL}
@@ -109,19 +104,8 @@ services:
     depends_on:
       - api
       - token-api
-      - qdrant
       - ollama
       - minio
-    networks:
-      - mcp-network
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: qdrant
-    expose:
-      - "6333"
-    volumes:
-      - qdrant_data:/qdrant/storage
     networks:
       - mcp-network
 
@@ -175,7 +159,6 @@ networks:
 volumes:
   db_data:
   token_db_data:
-  qdrant_data:
   openwebui_data:
   ollama_data:
   minio_data:
