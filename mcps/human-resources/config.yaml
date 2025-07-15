@@ -6,3 +6,7 @@ api:
 minio:
   bucket: hr-documents
   hr_logs_bucket: hr-logs
+pdf_extraction:
+  identifier_fields: ["employee_id"]  # Campos que forman el identifier (por ejemplo, ["employee_id"] o ["employee_id", "department"])
+  pdf_name_template: "employee_{identifier}.pdf"  # Plantilla para el nombre del PDF
+  cache_time: 10800

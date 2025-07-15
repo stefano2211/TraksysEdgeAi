@@ -151,3 +151,4 @@ def expand_env_vars(obj):
         return os.path.expandvars(obj)
     else:
         return obj
+
