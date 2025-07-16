@@ -6,7 +6,6 @@ api:
 minio:
   bucket: sop-pdfs
   mes_logs_bucket: mes-logs
-pdf_extraction:
-  identifier_fields: ["machine"]  # Campos que forman el identifier (por ejemplo, ["machine"] o ["machine", "production_line"])
-  pdf_name_template: "{identifier}.pdf"  # Plantilla para el nombre del PDF
-  cache_time: 10800
+qdrant:
+  collections: ["sop_cache"]  # Solo una colección para la caché de SOPs
+  sop_cache_ttl: 3600  # Tiempo de vida de la caché en segundos (1 hora por defecto)
