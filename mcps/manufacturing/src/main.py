@@ -22,14 +22,18 @@ config = expand_env_vars(config)
 logger.info(f"API URL: {config['api']['url']}, TOKEN API URL: {config['api']['token_url']}")
 
 mcp = FastMCP("Manufacturing Compliance Processor")
+tool_name = mcp.name.lower().replace(" ", "-")  # Ejemplo: "manufacturing-compliance-processor"
 
 minio_client = MinioClient(
     endpoint=os.getenv("MINIO_ENDPOINT"),
     access_key=os.getenv("MINIO_ACCESS_KEY"),
     secret_key=os.getenv("MINIO_SECRET_KEY"),
-    secure=os.getenv("MINIO_SECURE", "false").lower() == "true"
+    secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
+    tool_name=tool_name,
+    sop_prefix=config["minio"]["sop_prefix"],
+    mes_logs_prefix=config["minio"]["mes_logs_prefix"]
 )
-minio_client.ensure_bucket(config["minio"]["bucket"], config["minio"]["mes_logs_bucket"])
+minio_client.ensure_bucket()
 
 try:
     qdrant_manager = QdrantManager(
@@ -94,7 +98,7 @@ def fetch_mes_data(
             if not all_data:
                 return json.dumps({
                     "status": "no_data",
-                    "message": f"No se encontraron datos en el bucket {config['minio']['mes_logs_bucket']}",
+                    "message": f"No se encontraron datos en el bucket {tool_name}/{minio_client.mes_logs_prefix}",
                     "count": 0,
                     "data": [],
                     "covered_dates": []
@@ -179,7 +183,8 @@ def get_pdf_content(ctx: Context, key_values: Dict[str, str]) -> str:
         if len(key_values) != 1:
             raise ValueError("get_pdf_content expects exactly one key-value pair")
         field, value = next(iter(key_values.items()))
-        filename = f"{value}.pdf"  # Ejemplo: ModelA.pdf, Line3.pdf
+        filename = f"{value}.pdf"  # Ejemplo: ModelA.pdf, Line1.pdf
+        logger.info(f"Attempting to fetch PDF: {filename} for key_values {key_values}")
         point_id = encryption_manager.generate_id(key_values)
         
         if qdrant_manager:
@@ -192,7 +197,7 @@ def get_pdf_content(ctx: Context, key_values: Dict[str, str]) -> str:
                     "content": cache_result["content"]
                 }, ensure_ascii=False)
         
-        logger.info(f"Cache miss for {filename}, fetching from MinIO")
+        logger.info(f"Cache miss for {filename}, fetching from MinIO with full path: {minio_client.sop_prefix}{filename}")
         minio_result = json.loads(minio_client.get_pdf_content(filename))
         if minio_result["status"] != "success":
             return json.dumps(minio_result, ensure_ascii=False)

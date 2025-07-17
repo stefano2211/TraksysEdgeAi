@@ -4,12 +4,12 @@ import yaml
 from typing import Optional, List, Dict
 from mcp.server.fastmcp import FastMCP, Context
 from common.minio_utils import MinioClient
+from common.qdrant_utils import QdrantManager
 from common.auth_utils import AuthClient
 from common.encryption_utils import EncryptionManager
 from utils import expand_env_vars, DataValidator
 import os
 import inspect
-import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,14 +21,28 @@ config = expand_env_vars(config)
 logger.info(f"API URL: {config['api']['url']}, TOKEN API URL: {config['api']['token_url']}")
 
 mcp = FastMCP("Human Resources Compliance Processor")
+tool_name = mcp.name.lower().replace(" ", "-")  # Ejemplo: "human-resources-compliance-processor"
 
 minio_client = MinioClient(
     endpoint=os.getenv("MINIO_ENDPOINT"),
     access_key=os.getenv("MINIO_ACCESS_KEY"),
     secret_key=os.getenv("MINIO_SECRET_KEY"),
-    secure=os.getenv("MINIO_SECURE", "false").lower() == "true"
+    secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
+    tool_name=tool_name,
+    sop_prefix=config["minio"]["sop_prefix"],
+    mes_logs_prefix=config["minio"]["mes_logs_prefix"]
 )
-minio_client.ensure_bucket(config["minio"]["bucket"], config["minio"]["hr_logs_bucket"])
+minio_client.ensure_bucket()  # Solo un argumento implícito basado en tool_name y prefijos
+
+try:
+    qdrant_manager = QdrantManager(
+        host=os.getenv("QDRANT_HOST"),
+        port=int(os.getenv("QDRANT_PORT")),
+        sop_cache_ttl=config["qdrant"]["sop_cache_ttl"]
+    )
+except Exception as e:
+    logger.error(f"Failed to initialize QdrantManager: {str(e)}. Falling back to MinIO for SOPs.")
+    qdrant_manager = None
 
 auth_client = AuthClient(
     api_url=config["api"]["url"],
@@ -38,20 +52,6 @@ auth_client = AuthClient(
 encryption_manager = EncryptionManager(
     os.getenv("ENCRYPTION_KEY")
 )
-
-sop_rules_cache = {}  # Formato: {identifier: {"content": str, "timestamp": float}}
-CACHE_TTL = config["pdf_extraction"]["cache_time"]  # 3 horas en segundos
-
-def clear_expired_cache():
-    """Limpia las entradas de la caché que tienen más de 3 horas."""
-    current_time = time.time()
-    expired_keys = [
-        identifier for identifier, data in sop_rules_cache.items()
-        if current_time - data["timestamp"] > CACHE_TTL
-    ]
-    for identifier in expired_keys:
-        del sop_rules_cache[identifier]
-        logger.info(f"Caché para identifier={identifier} eliminada (expirada)")
 
 def fetch_hr_data(
     ctx: Context,
@@ -93,11 +93,11 @@ def fetch_hr_data(
         fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates)
         processed_data = []
         if config["data_source"]["use_minio_logs"]:
-            all_data = minio_client.get_all_json_logs(bucket_name=config["minio"]["hr_logs_bucket"])
+            all_data = minio_client.get_all_json_logs()
             if not all_data:
                 return json.dumps({
                     "status": "no_data",
-                    "message": f"No se encontraron datos en el bucket {config['minio']['hr_logs_bucket']}",
+                    "message": f"No se encontraron datos en el bucket {tool_name}/{minio_client.mes_logs_prefix}",
                     "count": 0,
                     "data": [],
                     "covered_dates": []
@@ -199,9 +199,52 @@ def fetch_hr_data(
         }, ensure_ascii=False)
 
 @mcp.tool()
-def get_pdf_content(ctx: Context, filename: str) -> str:
-    """Recupera el contenido de un archivo PDF almacenado en MinIO."""
-    return minio_client.get_pdf_content(filename, bucket_name=config["minio"]["bucket"])
+def get_pdf_content(ctx: Context, key_values: Dict[str, str]) -> str:
+    """Recupera el contenido de un archivo PDF almacenado en MinIO, usando Qdrant como caché si está disponible."""
+    try:
+        # Generar un nombre de archivo basado en el valor del key_value (sin incluir la clave)
+        if len(key_values) != 1:
+            raise ValueError("get_pdf_content expects exactly one key-value pair")
+        field, value = next(iter(key_values.items()))
+        filename = f"{value}.pdf"  # Ejemplo: employee_001.pdf
+        logger.info(f"Attempting to fetch PDF: {filename} for key_values {key_values}")
+        point_id = encryption_manager.generate_id(key_values)
+        
+        if qdrant_manager:
+            cache_result = qdrant_manager.get_sop(key_values)
+            if cache_result["status"] == "success":
+                logger.info(f"Cache hit for SOP with key_values {key_values}")
+                return json.dumps({
+                    "status": "success",
+                    "filename": filename,
+                    "content": cache_result["content"]
+                }, ensure_ascii=False)
+        
+        logger.info(f"Cache miss for {filename}, fetching from MinIO with full path: {minio_client.sop_prefix}{filename}")
+        minio_result = json.loads(minio_client.get_pdf_content(filename))
+        if minio_result["status"] != "success":
+            return json.dumps(minio_result, ensure_ascii=False)
+        
+        content = minio_result["content"]
+        if qdrant_manager:
+            try:
+                qdrant_manager.upsert_sop(key_values, content, point_id)
+            except Exception as e:
+                logger.warning(f"Failed to cache SOP in Qdrant: {str(e)}. Continuing with MinIO content.")
+        
+        return json.dumps({
+            "status": "success",
+            "filename": filename,
+            "content": content
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error retrieving PDF content for {filename}: {str(e)}")
+        return json.dumps({
+            "status": "error",
+            "message": str(e),
+            "filename": filename,
+            "content": ""
+        }, ensure_ascii=False)
 
 @mcp.tool()
 def list_fields(ctx: Context) -> str:
@@ -210,7 +253,7 @@ def list_fields(ctx: Context) -> str:
     """
     try:
         if config["data_source"]["use_minio_logs"]:
-            all_data = minio_client.get_all_json_logs(bucket_name=config["minio"]["hr_logs_bucket"])
+            all_data = minio_client.get_all_json_logs()
         else:
             response = auth_client.get("/employees/")
             response.raise_for_status()
@@ -222,18 +265,9 @@ def list_fields(ctx: Context) -> str:
                 "key_figures": [],
                 "key_values": {}
             }, ensure_ascii=False)
-        key_figures = set()
-        key_values = {}
-        for record in all_data:
-            for k, v in record.items():
-                if isinstance(v, (int, float)):
-                    key_figures.add(k)
-                elif isinstance(v, str):
-                    if k not in key_values:
-                        key_values[k] = set()
-                    key_values[k].add(v)
-        key_figures = list(key_figures)
-        key_values = {k: sorted(list(v)) for k, v in key_values.items()}
+        sample = all_data[0]
+        key_figures = [k for k, v in sample.items() if isinstance(v, (int, float))]
+        key_values = {k: sorted({rec[k] for rec in all_data if k in rec}) for k, v in sample.items() if isinstance(v, str)}
         return json.dumps({
             "status": "success",
             "key_figures": key_figures,
@@ -345,7 +379,7 @@ def analyze_compliance(
              "end_date": "2025-04-11"
          }
          ```
-        - Para un rango de fechas sin rangos:
+       - Para un rango de fechas con multiples rangos:
          ```json
          {
              "key_values": {
@@ -379,9 +413,6 @@ def analyze_compliance(
        - Si los rangos (`min` o `max`) no son numéricos, devuelve un error solicitando valores válidos.
     """
     try:
-        # Limpiar caché expirada
-        clear_expired_cache()
-
         key_values = key_values or {}
         normalized_key_figures = []
         if key_figures:
@@ -393,23 +424,32 @@ def analyze_compliance(
         if not normalized_key_figures:
             fields_info = json.loads(list_fields(ctx))
             if fields_info["status"] != "success":
-                logger.warning("No se pudieron obtener campos válidos, usando key_figures vacíos")
-                normalized_key_figures = []
-            else:
-                normalized_key_figures = fields_info["key_figures"]
-                logger.info(f"No key_figures provided, using all numeric fields: {normalized_key_figures}")
+                return json.dumps({
+                    "status": "error",
+                    "message": "No se pudieron obtener campos válidos",
+                    "results": [],
+                    "analysis_notes": ["No se pudieron obtener campos válidos"]
+                }, ensure_ascii=False)
+            normalized_key_figures = fields_info["key_figures"]
+            logger.info(f"No key_figures provided, using all numeric fields: {normalized_key_figures}")
         else:
             normalized_key_figures = normalized_key_figures or []
 
         fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates)
         valid_values = fields_info["key_values"]
         logger.info(f"Analyzing data: key_figures={key_figures}, key_values={key_values}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
-
-        # Determinar los campos identificadores desde config.yaml
-        identifier_fields = config["pdf_extraction"].get("identifier_fields", ["employee_id"])
-        pdf_name_template = config["pdf_extraction"].get("pdf_name_template", "employee_{identifier}.pdf")
-
-        # Obtener datos HR
+        identifier_field = None
+        identifier_value = None
+        if valid_values:
+            for field in valid_values.keys():
+                if field in key_values:
+                    identifier_field = field
+                    identifier_value = key_values[field]
+                    break
+            if not identifier_field:
+                identifier_field = next(iter(valid_values))
+                identifier_value = key_values.get(identifier_field)
+        logger.info(f"Selected identifier_field: {identifier_field}, identifier_value: {identifier_value}")
         fetch_result = json.loads(fetch_hr_data(ctx, key_values, key_figures, start_date, end_date, specific_dates))
         analysis_notes = [fetch_result.get("message", "")] if fetch_result.get("message") else []
         if fetch_result["status"] == "no_data":
@@ -417,7 +457,7 @@ def analyze_compliance(
                 "status": "no_data",
                 "message": fetch_result["message"],
                 "period": f"{start_date or 'N/A'} to {end_date or 'N/A'}" if start_date else f"Specific dates: {specific_dates or 'N/A'}",
-                "identifier": "all records",
+                "identifier": f"{identifier_field}={identifier_value}" if identifier_field and identifier_value else "all records",
                 "metrics_analyzed": normalized_key_figures,
                 "results": [],
                 "policy_content": {},
@@ -430,61 +470,25 @@ def analyze_compliance(
                 "results": [],
                 "analysis_notes": analysis_notes
             }, ensure_ascii=False)
-
-        # Construir identifiers desde los datos HR
-        identifiers = set()
-        for record in fetch_result["data"]:
-            identifier_parts = []
-            for field in identifier_fields:
-                if field in record:
-                    identifier_parts.append(record[field])
-            if identifier_parts:
-                identifier = "_".join(str(part) for part in identifier_parts)
-                identifiers.add(identifier)
-
-        # Cargar y cachear el contenido de los PDFs en una sola pasada
+        
+        # Procesar políticas para cada key_value individual
         policy_content = {}
-        try:
-            objects = minio_client.client.list_objects(config["minio"]["bucket"], recursive=True)
-            for obj in objects:
-                if obj.object_name.endswith(".pdf"):
-                    filename = obj.object_name
-                    identifier = filename.replace("employee_", "").replace(".pdf", "")
-                    if identifier in identifiers or not identifiers:  # Cargar solo PDFs relevantes
-                        if identifier in sop_rules_cache and sop_rules_cache[identifier]["timestamp"] + CACHE_TTL > time.time():
-                            policy_content[identifier] = sop_rules_cache[identifier]["content"]
-                            logger.info(f"Contenido para identifier={identifier} recuperado de la caché")
-                        else:
-                            pdf_result = json.loads(minio_client.get_pdf_content(filename, bucket_name=config["minio"]["bucket"]))
-                            if pdf_result["status"] == "success":
-                                sop_rules_cache[identifier] = {
-                                    "content": pdf_result["content"],
-                                    "timestamp": time.time()
-                                }
-                                policy_content[identifier] = pdf_result["content"]
-                                logger.info(f"Contenido para identifier={identifier} extraído y cacheado")
-                            else:
-                                policy_content[identifier] = ""
-                                analysis_notes.append(f"Failed to load policy for identifier={identifier}: {pdf_result['message']}")
-                                logger.warning(f"Failed to load policy for identifier={identifier}: {pdf_result['message']}")
-        except Exception as e:
-            logger.error(f"Error al listar PDFs en MinIO: {str(e)}")
-            analysis_notes.append(f"Error al listar PDFs en MinIO: {str(e)}")
+        for field, value in key_values.items():
+            pdf_result = json.loads(get_pdf_content(ctx, {field: value}))
+            if pdf_result["status"] == "success":
+                policy_content[f"{field}={value}"] = pdf_result.get("content", "")
+                logger.info(f"Policy content for {field}={value}: {policy_content[f'{field}={value}'][:100]}...")
+            else:
+                policy_content[f"{field}={value}"] = ""
+                analysis_notes.append(f"Failed to load policy for {field}={value}: {pdf_result['message']}")
+                logger.warning(f"Failed to load policy for {field}={value}: {pdf_result['message']}")
 
-        # Analizar cumplimiento
         results = []
         for record in fetch_result["data"]:
-            identifier_parts = []
-            for field in identifier_fields:
-                if field in record:
-                    identifier_parts.append(record[field])
-            identifier = "_".join(str(part) for part in identifier_parts) if identifier_parts else None
-
             analysis = {
                 "date": record.get("date", "Desconocida"),
                 **{k: record.get(k) for k in key_values},
-                "metrics": {k: record[k] for k in normalized_key_figures if k in record and record[k] is not None},
-                "policy_content": policy_content.get(identifier, "") if identifier else ""
+                "metrics": {k: record[k] for k in normalized_key_figures if k in record and record[k] is not None}
             }
             results.append(analysis)
         analysis_notes.append(f"Filtered data for {key_values}")
@@ -496,7 +500,7 @@ def analyze_compliance(
         return json.dumps({
             "status": "success",
             "period": period,
-            "identifier": f"{'_'.join(identifier_fields)}={'_'.join(key_values.get(f, '') for f in identifier_fields)}",
+            "identifier": f"{identifier_field}={identifier_value}" if identifier_field and identifier_value else "all records",
             "metrics_analyzed": normalized_key_figures,
             "results": results,
             "policy_content": policy_content,
@@ -544,7 +548,7 @@ def get_hr_dataset(
            "start_date": "2025-04-09",
            "end_date": "2025-04-11"
        }
-    3. Rango de fechas con 2 rangos key_figures:
+    3. Rango de fechas con multiples rangos:
        {
            "key_values": {"employee_id": "001"},
            "key_figures": [
@@ -554,7 +558,7 @@ def get_hr_dataset(
            "start_date": "2025-04-09",
            "end_date": "2025-04-11"
        }
-    4. Rango de fechas con un rango key_figures y otro sin rangos:
+    4. Rango de fechas con un rango y uno sin rango:
          {           
            "key_values": {"employee_id": "001"},
            "key_figures": [
@@ -596,7 +600,7 @@ def get_hr_dataset(
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
     """
-    Lista las herramientas disponibles en el MCP.
+    Lista las herramientas disponibles en el MCP, incluyendo las definidas por el usuario y las internas de FastMCP.
     """
     try:
         tools = []

@@ -10,40 +10,34 @@ import os
 logger = logging.getLogger(__name__)
 
 class MinioClient:
-    def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False):
+    def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False, tool_name: str = "manufacturing", sop_prefix: str = "sop-pdfs/", mes_logs_prefix: str = "mes-logs/"):
         if not all([endpoint, access_key, secret_key]):
             raise ValueError("MinIO endpoint, access_key, and secret_key must be provided")
         self.client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
-        self.bucket_name = None
-        self.mes_logs_bucket = None
+        self.bucket_name = tool_name.lower().replace(" ", "-")  # Ejemplo: "Manufacturing Compliance Processor" -> "manufacturing"
+        self.sop_prefix = sop_prefix  # Prefijo para PDFs desde config.yaml
+        self.mes_logs_prefix = mes_logs_prefix  # Prefijo para logs JSON desde config.yaml
 
-    def ensure_bucket(self, bucket_name: str, mes_logs_bucket: str = None):
-        """Crea los buckets si no existen."""
-        self.bucket_name = bucket_name
+    def ensure_bucket(self):
+        """Crea el bucket principal y los prefijos sop-pdfs/ y mes-logs/ si no existen."""
         try:
-            if not self.client.bucket_exists(bucket_name):
-                self.client.make_bucket(bucket_name)
-                logger.info(f"Bucket {bucket_name} created.")
+            if not self.client.bucket_exists(self.bucket_name):
+                self.client.make_bucket(self.bucket_name)
+                logger.info(f"Bucket {self.bucket_name} created.")
+            # Crear prefijos subiendo objetos vacíos como marcadores
+            empty_data = io.BytesIO(b"")
+            self.client.put_object(self.bucket_name, f"{self.sop_prefix}.marker", empty_data, 0)
+            self.client.put_object(self.bucket_name, f"{self.mes_logs_prefix}.marker", empty_data, 0)
+            logger.info(f"Prefijos {self.sop_prefix} y {self.mes_logs_prefix} inicializados en {self.bucket_name}.")
         except S3Error as e:
-            logger.error(f"Failed to create bucket {bucket_name}: {str(e)}")
+            logger.error(f"Failed to create bucket or prefixes in {self.bucket_name}: {str(e)}")
             raise
-        if mes_logs_bucket:
-            self.mes_logs_bucket = mes_logs_bucket
-            try:
-                if not self.client.bucket_exists(mes_logs_bucket):
-                    self.client.make_bucket(mes_logs_bucket)
-                    logger.info(f"Bucket {mes_logs_bucket} created.")
-            except S3Error as e:
-                logger.error(f"Failed to create bucket {mes_logs_bucket}: {str(e)}")
-                raise
 
-    def get_pdf_content(self, filename: str, bucket_name: str = None) -> str:
-        """Extrae el contenido de un PDF desde MinIO."""
-        bucket = bucket_name or self.bucket_name
-        if not bucket:
-            raise ValueError("Bucket name must be provided or set in ensure_bucket")
+    def get_pdf_content(self, filename: str) -> str:
+        """Extrae el contenido de un PDF desde MinIO, usando el prefijo sop-pdfs/."""
         try:
-            response = self.client.get_object(bucket, filename)
+            object_name = f"{self.sop_prefix}{filename}"  # Ejemplo: manufacturing/sop-pdfs/ModelA.pdf
+            response = self.client.get_object(self.bucket_name, object_name)
             pdf_data = response.read()
             response.close()
             response.release_conn()
@@ -55,8 +49,8 @@ class MinioClient:
                 "content": content
             }, ensure_ascii=False)
         except S3Error as e:
-            available_pdfs = [obj.object_name for obj in self.client.list_objects(bucket)]
-            logger.warning(f"PDF not found: {filename}. Available PDFs: {', '.join(available_pdfs)}")
+            available_pdfs = [obj.object_name[len(self.sop_prefix):] for obj in self.client.list_objects(self.bucket_name, prefix=self.sop_prefix, recursive=True)]
+            logger.warning(f"PDF not found: {object_name}. Available PDFs: {', '.join(available_pdfs)}")
             return json.dumps({
                 "status": "error",
                 "message": f"PDF not found: {filename}. Available PDFs: {', '.join(available_pdfs)}",
@@ -64,7 +58,7 @@ class MinioClient:
                 "content": ""
             }, ensure_ascii=False)
         except Exception as e:
-            logger.error(f"Error extracting content from {filename}: {str(e)}")
+            logger.error(f"Error extracting content from {object_name}: {str(e)}")
             return json.dumps({
                 "status": "error",
                 "message": str(e),
@@ -73,13 +67,13 @@ class MinioClient:
             }, ensure_ascii=False)
 
     def get_all_json_logs(self) -> List[Dict]:
-        """Lee todos los archivos JSON del bucket de logs."""
+        """Lee todos los archivos JSON del prefijo mes-logs/."""
         try:
-            objects = self.client.list_objects(self.mes_logs_bucket)
+            objects = self.client.list_objects(self.bucket_name, prefix=self.mes_logs_prefix, recursive=True)
             logs = []
             for obj in objects:
                 if obj.object_name.endswith('.json'):
-                    response = self.client.get_object(self.mes_logs_bucket, obj.object_name)
+                    response = self.client.get_object(self.bucket_name, obj.object_name)
                     json_data = response.read().decode('utf-8')
                     response.close()
                     response.release_conn()
@@ -91,10 +85,10 @@ class MinioClient:
                             logs.append(data)
                     except json.JSONDecodeError as e:
                         logger.warning(f"Invalid JSON in {obj.object_name}: {str(e)}")
-            logger.info(f"Loaded {len(logs)} records from {self.mes_logs_bucket}")
+            logger.info(f"Loaded {len(logs)} records from {self.bucket_name}/{self.mes_logs_prefix}")
             return logs
         except S3Error as e:
-            logger.error(f"Failed to read JSON logs from {self.mes_logs_bucket}: {str(e)}")
+            logger.error(f"Failed to read JSON logs from {self.bucket_name}/{self.mes_logs_prefix}: {str(e)}")
             return []
         except Exception as e:
             logger.error(f"Error retrieving JSON logs: {str(e)}")
