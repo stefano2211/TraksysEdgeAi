@@ -21,48 +21,82 @@ with open("/app/config.yaml", "r") as f:
 config = expand_env_vars(config)
 logger.info(f"API URL: {config['api']['url']}, TOKEN API URL: {config['api']['token_url']}")
 
-mcp = FastMCP("Manufacturing Compliance Processor")
-tool_name = mcp.name.lower().replace(" ", "-")  # Ejemplo: "manufacturing-compliance-processor"
+mcp = FastMCP("Multi-Area Compliance Processor")
+tool_name = mcp.name.lower().replace(" ", "-")  # Ejemplo: "multi-area-compliance-processor"
 
-minio_client = MinioClient(
-    endpoint=os.getenv("MINIO_ENDPOINT"),
-    access_key=os.getenv("MINIO_ACCESS_KEY"),
-    secret_key=os.getenv("MINIO_SECRET_KEY"),
-    secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
-    tool_name=tool_name,
-    sop_prefix=config["minio"]["sop_prefix"],
-    mes_logs_prefix=config["minio"]["mes_logs_prefix"]
-)
-minio_client.ensure_bucket()
-
-try:
-    qdrant_manager = QdrantManager(
-        host=os.getenv("QDRANT_HOST"),
-        port=int(os.getenv("QDRANT_PORT")),
-        sop_cache_ttl=config["qdrant"]["sop_cache_ttl"]
-    )
-except Exception as e:
-    logger.error(f"Failed to initialize QdrantManager: {str(e)}. Falling back to MinIO for SOPs.")
-    qdrant_manager = None
-
+# Inicialización de clientes globales
 auth_client = AuthClient(
-    api_url=config["api"]["url"],
-    token_api_url=config["api"]["token_url"]
+    api_url=config['api']['url'],
+    token_api_url=config['api']['token_url']
 )
-
 encryption_manager = EncryptionManager(
     os.getenv("ENCRYPTION_KEY")
 )
 
-def fetch_mes_data(
-    ctx: Context,
-    key_values: Optional[Dict[str, str]] = None,
-    key_figures: Optional[List[Dict]] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    specific_dates: Optional[List[str]] = None
-) -> str:
+# Inicializar buckets para todos los tools al arrancar
+def initialize_buckets():
+    for tool_name in config.get("tools", {}):
+        tool_config = config["tools"][tool_name]
+        minio_client = MinioClient(
+            endpoint=os.getenv("MINIO_ENDPOINT"),
+            access_key=os.getenv("MINIO_ACCESS_KEY"),
+            secret_key=os.getenv("MINIO_SECRET_KEY"),
+            secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
+            tool_name=tool_name,
+            bucket=tool_config["minio"]["bucket"],
+            sop_prefix=tool_config["minio"]["sop_prefix"],
+            mes_logs_prefix=tool_config["minio"]["mes_logs_prefix"]
+        )
+        minio_client.ensure_bucket()
+        logger.info(f"Bucket {tool_config['minio']['bucket']} initialized for tool {tool_name}")
+
+# Llamar a initialize_buckets al inicio
+initialize_buckets()
+
+def get_tool_client(tool_name: str):
+    """Devuelve instancias de MinioClient y QdrantManager para el tool especificado."""
+    if tool_name not in config.get("tools", {}):
+        raise ValueError(f"Tool {tool_name} not configured")
+    
+    tool_config = config["tools"][tool_name]
+    minio_client = MinioClient(
+        endpoint=os.getenv("MINIO_ENDPOINT"),
+        access_key=os.getenv("MINIO_ACCESS_KEY"),
+        secret_key=os.getenv("MINIO_SECRET_KEY"),
+        secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
+        tool_name=tool_name,
+        bucket=tool_config["minio"]["bucket"],
+        sop_prefix=tool_config["minio"]["sop_prefix"],
+        mes_logs_prefix=tool_config["minio"]["mes_logs_prefix"]
+    )
+
     try:
+        qdrant_manager = QdrantManager(
+            host=os.getenv("QDRANT_HOST"),
+            port=int(os.getenv("QDRANT_PORT")),
+            collections=tool_config["qdrant"]["collections"],
+            sop_cache_ttl=tool_config["qdrant"]["sop_cache_ttl"]
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize QdrantManager for {tool_name}: {str(e)}. Falling back to MinIO for SOPs.")
+        qdrant_manager = None
+
+    return minio_client, qdrant_manager
+
+
+def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
+    try:
+        if tool_name not in config.get("tools", {}):
+            return json.dumps({
+                "status": "error",
+                "message": f"Tool {tool_name} not configured",
+                "count": 0,
+                "data": [],
+                "covered_dates": []
+            }, ensure_ascii=False)
+        
+        tool_config = config["tools"][tool_name]
+        minio_client, qdrant_manager = get_tool_client(tool_name)
         key_values = key_values or {}
         normalized_key_figures = []
         figure_ranges = {}
@@ -78,7 +112,7 @@ def fetch_mes_data(
                             "max": item.get("max", None)
                         }
         if not normalized_key_figures:
-            fields_info = json.loads(list_fields(ctx))
+            fields_info = json.loads(list_fields(ctx, tool_name))
             if fields_info["status"] != "success":
                 return json.dumps({
                     "status": "error",
@@ -91,25 +125,36 @@ def fetch_mes_data(
         else:
             normalized_key_figures = normalized_key_figures or []
 
-        fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates)
+        # Pasar tool_name a DataValidator.validate_fields
+        logger.info(f"Validating fields in fetch_data for tool_name: {tool_name}")
+        fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates, tool_name=tool_name)
         
-        if config["data_source"]["use_minio_logs"]:
+        if tool_config["type"] == "json":
             all_data = minio_client.get_all_json_logs()
             if not all_data:
                 return json.dumps({
                     "status": "no_data",
-                    "message": f"No se encontraron datos en el bucket {tool_name}/{minio_client.mes_logs_prefix}",
+                    "message": f"No se encontraron datos en el bucket {minio_client.bucket}/{minio_client.mes_logs_prefix}",
                     "count": 0,
                     "data": [],
                     "covered_dates": []
                 }, ensure_ascii=False)
-        else:
+        else:  # api
+            api_endpoint = tool_config.get("api_endpoint")
+            if not api_endpoint or api_endpoint == "null":
+                return json.dumps({
+                    "status": "error",
+                    "message": f"api_endpoint not configured for tool {tool_name}",
+                    "count": 0,
+                    "data": [],
+                    "covered_dates": []
+                }, ensure_ascii=False)
             params = {}
             if specific_dates:
                 params["specific_date"] = specific_dates[0]
             elif start_date and end_date:
                 params.update({"start_date": start_date, "end_date": end_date})
-            response = auth_client.get("/machines/", params=params)
+            response = auth_client.get(api_endpoint, params=params)
             response.raise_for_status()
             all_data = response.json()
 
@@ -166,31 +211,61 @@ def fetch_mes_data(
             "covered_dates": coverage["covered_dates"]
         }, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Data retrieval failed: {str(e)}")
+        logger.error(f"Data retrieval failed for {tool_name}: {str(e)}")
         return json.dumps({
             "status": "error",
             "message": str(e),
             "count": 0,
             "data": [],
-            "covered_dates": []
+            "covered__dates": []
         }, ensure_ascii=False)
 
 @mcp.tool()
-def get_pdf_content(ctx: Context, key_values: Dict[str, str]) -> str:
-    """Recupera el contenido de un archivo PDF almacenado en MinIO, usando Qdrant como caché si está disponible."""
+def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) -> str:
+    """
+    Recupera el contenido de un archivo PDF para un área específica usando Qdrant como caché si está disponible.
+
+    INSTRUCCIONES PARA EL LLM:
+    1. **Seleccionar el tool_name**: Usa `list_available_tools` para obtener las áreas disponibles y elige el `tool_name` adecuado (e.g., "manufacturing", "human_resources").
+    2. **Validar key_values**: Asegúrate de que `key_values` contenga exactamente un par clave-valor (e.g., {"machine": "ModelA"} o {"employee_id": "001"}) basado en los campos categóricos de `list_fields` para el `tool_name` seleccionado.
+    3. **Generar filename**: El filename se deriva del valor en `key_values` (e.g., "ModelA.pdf" para {"machine": "ModelA"}).
+    4. **Ejemplo de consulta**:
+       ```json
+       {
+           "tool_name": "manufacturing",
+           "key_values": {"machine": "ModelA"}
+       }
+       ```
+       O para `human_resources`:
+       ```json
+       {
+           "tool_name": "human_resources",
+           "key_values": {"employee_id": "001"}
+       }
+       ```
+    5. **Manejo de errores**: Si `key_values` tiene más de un par o el archivo no existe, devuelve un error solicitando un solo par clave-valor válido.
+    """
     try:
-        # Generar un nombre de archivo basado en el valor del key_value (sin incluir la clave)
+        if tool_name not in config.get("tools", {}):
+            return json.dumps({
+                "status": "error",
+                "message": f"Tool {tool_name} not configured",
+                "filename": "",
+                "content": ""
+            }, ensure_ascii=False)
+        
+        minio_client, qdrant_manager = get_tool_client(tool_name)
         if len(key_values) != 1:
             raise ValueError("get_pdf_content expects exactly one key-value pair")
         field, value = next(iter(key_values.items()))
-        filename = f"{value}.pdf"  # Ejemplo: ModelA.pdf, Line1.pdf
-        logger.info(f"Attempting to fetch PDF: {filename} for key_values {key_values}")
+        filename = f"{value}.pdf"
+        logger.info(f"Attempting to fetch PDF: {filename} for key_values {key_values} in {tool_name}")
         point_id = encryption_manager.generate_id(key_values)
         
         if qdrant_manager:
             cache_result = qdrant_manager.get_sop(key_values)
             if cache_result["status"] == "success":
-                logger.info(f"Cache hit for SOP with key_values {key_values}")
+                logger.info(f"Cache hit for SOP with key_values {key_values} in {tool_name}")
                 return json.dumps({
                     "status": "success",
                     "filename": filename,
@@ -207,7 +282,7 @@ def get_pdf_content(ctx: Context, key_values: Dict[str, str]) -> str:
             try:
                 qdrant_manager.upsert_sop(key_values, content, point_id)
             except Exception as e:
-                logger.warning(f"Failed to cache SOP in Qdrant: {str(e)}. Continuing with MinIO content.")
+                logger.warning(f"Failed to cache SOP in Qdrant for {tool_name}: {str(e)}. Continuing with MinIO content.")
         
         return json.dumps({
             "status": "success",
@@ -215,7 +290,7 @@ def get_pdf_content(ctx: Context, key_values: Dict[str, str]) -> str:
             "content": content
         }, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Error retrieving PDF content for {filename}: {str(e)}")
+        logger.error(f"Error retrieving PDF content for {filename} in {tool_name}: {str(e)}")
         return json.dumps({
             "status": "error",
             "message": str(e),
@@ -224,21 +299,56 @@ def get_pdf_content(ctx: Context, key_values: Dict[str, str]) -> str:
         }, ensure_ascii=False)
 
 @mcp.tool()
-def list_fields(ctx: Context) -> str:
+def list_fields(ctx: Context, tool_name: str) -> str:
     """
-    Lista los campos disponibles en el dataset MES, incluyendo métricas numéricas y valores categóricos.
+    Lista los campos disponibles en el dataset de un área específica.
+
+    INSTRUCCIONES PARA EL LLM:
+    1. **Seleccionar el tool_name**: Usa `list_available_tools` para obtener las áreas disponibles y elige el `tool_name` adecuado (e.g., "manufacturing", "human_resources").
+    2. **Uso**: Llama a esta función con el `tool_name` para obtener los campos `key_figures` (numéricos) y `key_values` (categóricos) específicos de esa área.
+    3. **Ejemplo de consulta**:
+       ```json
+       {
+           "tool_name": "manufacturing"
+       }
+       ```
+       O:
+       ```json
+       {
+           "tool_name": "human_resources"
+       }
+       ```
+    4. **Resultado**: Devuelve un JSON con `key_figures` y `key_values` que deben usarse en otras funciones como `fetch_data` o `analyze_compliance`.
     """
     try:
-        if config["data_source"]["use_minio_logs"]:
+        if tool_name not in config.get("tools", {}):
+            return json.dumps({
+                "status": "error",
+                "message": f"Tool {tool_name} not configured",
+                "key_figures": [],
+                "key_values": {}
+            }, ensure_ascii=False)
+        
+        minio_client, _ = get_tool_client(tool_name)
+        tool_config = config["tools"][tool_name]
+        if tool_config["type"] == "json":
             all_data = minio_client.get_all_json_logs()
         else:
-            response = auth_client.get("/machines/")
+            api_endpoint = tool_config.get("api_endpoint")
+            if not api_endpoint or api_endpoint == "null":
+                return json.dumps({
+                    "status": "error",
+                    "message": f"api_endpoint not configured for tool {tool_name}",
+                    "key_figures": [],
+                    "key_values": {}
+                }, ensure_ascii=False)
+            response = auth_client.get(api_endpoint)
             response.raise_for_status()
             all_data = response.json()
         if not all_data:
             return json.dumps({
                 "status": "no_data",
-                "message": "No se encontraron registros en el sistema MES",
+                "message": f"No se encontraron registros en el sistema {tool_name}",
                 "key_figures": [],
                 "key_values": {}
             }, ensure_ascii=False)
@@ -251,7 +361,7 @@ def list_fields(ctx: Context) -> str:
             "key_values": key_values
         }, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Field listing failed: {str(e)}")
+        logger.error(f"Field listing failed for {tool_name}: {str(e)}")
         return json.dumps({
             "status": "error",
             "message": str(e),
@@ -260,39 +370,18 @@ def list_fields(ctx: Context) -> str:
         }, ensure_ascii=False)
 
 @mcp.tool()
-def analyze_compliance(
-    ctx: Context,
-    key_values: Optional[Dict[str, str]] = None,
-    key_figures: Optional[List[Dict]] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    specific_dates: Optional[List[str]] = None
-) -> str:
+def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
     """
-    Analiza el cumplimiento de los datos MES contra reglas SOP.
-
-    Esta función recupera datos del sistema MES, los compara con procedimientos operativos estándar (SOPs)
-    almacenados en MinIO y genera un informe de cumplimiento.
-
-    Args:
-        ctx (Context): Contexto de la solicitud proporcionado por el MCP.
-        key_values (Optional[Dict[str, str]]): Filtros categóricos (e.g., {"machine": "ModelA"}).
-        key_figures (Optional[List[Dict]]): Campos numéricos a analizar con rangos opcionales (e.g., [{"field": "temperature", "min": 70, "max": 80}]).
-        start_date (Optional[str]): Fecha de inicio para el rango de análisis (formato YYYY-MM-DD).
-        end_date (Optional[str]): Fecha de fin para el rango de análisis (formato YYYY-MM-DD).
-        specific_dates (Optional[List[str]]): Lista de fechas específicas para el análisis (formato YYYY-MM-DD).
-
-    Returns:
-        str: Respuesta en formato JSON con el estado, resultados, contenido de SOPs y notas.
+    Analiza el cumplimiento de los datos de un área específica contra reglas SOP.
 
     INSTRUCCIONES PARA EL LLM:
-    1. **Obtener campos válidos**: Antes de construir la consulta, llama a la función `list_fields` para obtener los
-       campos disponibles en el dataset MES (key_figures y key_values).
-    2. **Validar campos**: Usa solo campos presentes en la respuesta de `list_fields` para `key_figures` (numéricos) y
-       `key_values` (categóricos).
-    3. **Estructura de la consulta**: La consulta debe seguir esta estructura:
+    1. **Seleccionar el tool_name**: Usa `list_available_tools` para obtener las áreas disponibles y elige el `tool_name` adecuado (e.g., "manufacturing", "human_resources").
+    2. **Obtener campos válidos**: Llama a `list_fields` con el Ejemplo:`tool_name` para obtener los campos `key_figures` y `key_values` específicos de esa área.
+    3. **Validar campos**: Usa solo campos presentes en la respuesta de `list_fields` para el `tool_name` seleccionado.
+    4. **Estructura de la consulta**: Sigue esta estructura:
        ```json
        {
+           "tool_name": "<nombre_del_area>",
            "key_values": {
                "<campo_categórico_1>": "<valor>",
                "<campo_categórico_2>": "<valor>"
@@ -308,89 +397,47 @@ def analyze_compliance(
            "end_date": "YYYY-MM-DD"
        }
        ```
-       Nota: `min` y `max` son opcionales. Si no se especifican, se incluyen todos los valores del campo.
-    4. **Cuándo usar specific_dates vs. start_date/end_date**:
-       - Usa `specific_dates` cuando la consulta menciona días concretos (e.g., "solo el 9 de abril de 2025" o
-         "9 y 11 de abril de 2025"). Ejemplo: `specific_dates: ["2025-04-09", "2025-04-11"]`.
-       - Usa `start_date` y `end_date` cuando la consulta menciona un rango de fechas (e.g., "del 9 al 11 de abril de
-         2025"). Ejemplo: `start_date: "2025-04-09", end_date: "2025-04-11"`.
-       - No combines `specific_dates` con `start_date`/`end_date` en la misma consulta.
-       - Si la consulta no especifica fechas, omite ambos parámetros.
-    5. **Ejemplo dinámico**:
-       Supón que `list_fields` devuelve:
-       ```json
-       {
-           "key_figures": ["temperature", "uptime", "vibration"],
-           "key_values": {
-               "machine": ["ModelA", "ModelB"],
-               "production_line": ["Line1", "Line2", "Line3"]
-           }
-       }
-       ```
-       Consultas válidas serían:
-       - Para fechas específicas con rangos:
+       Nota: `min` y `max` son opcionales. Si no se especifican, se incluyen todos los valores.
+    5. **Cuándo usar specific_dates vs. start_date/end_date**:
+       - Usa `specific_dates` para días concretos (e.g., "solo el 18 de julio de 2025"). Ejemplo: `specific_dates: ["2025-07-18"]`.
+       - Usa `start_date` y `end_date` para rangos (e.g., "del 18 al 20 de julio de 2025"). Ejemplo: `start_date: "2025-07-18", end_date: "2025-07-20"`.
+       - No combines ambos.
+       - Omite fechas si no se especifican.
+    6. **Ejemplo por área**:
+       - Para `manufacturing`:
          ```json
          {
-             "key_values": {
-                 "machine": "ModelA",
-                 "production_line": "Line3"
-             },
-             "key_figures": [
-                 {"field": "temperature", "min": 70, "max": 80},
-                 {"field": "uptime"}
-             ],
-             "specific_dates": ["2025-04-09"]
+             "tool_name": "manufacturing",
+             "key_values": {"machine": "ModelA"},
+             "key_figures": [{"field": "temperature", "min": 70, "max": 80}],
+             "start_date": "2025-07-18",
+             "end_date": "2025-07-20"
          }
          ```
-       - Para un rango de fechas sin rangos:
+       - Para `human_resources`:
          ```json
          {
-             "key_values": {
-                 "machine": "ModelA",
-                 "production_line": "Line3"
-             },
-             "key_figures": [
-                 {"field": "temperature"},
-                 {"field": "uptime"}
-             ],
-             "start_date": "2025-04-09",
-             "end_date": "2025-04-11"
+             "tool_name": "human_resources",
+             "key_values": {"employee_id": "001"},
+             "key_figures": [{"field": "hours_worked", "min": 8}],
+             "specific_dates": ["2025-07-18"]
          }
          ```
-       - Para un rango de fechas con multiples rangos:
-         ```json
-         {
-             "key_values": {
-                 "machine": "ModelA",
-                 "production_line": "Line3"
-             },
-             "key_figures": [
-                 {"field": "temperature", "min": 70, "max": 80},
-                 {"field": "defects", "min": 0, "max": 1},
-             ],
-             "start_date": "2025-04-09",
-             "end_date": "2025-04-11"
-         }
-         ```
-       - Para un rango de fechas sin key_figures:
-         ```json
-         {
-             "key_values": {
-                 "machine": "ModelA",
-                 "production_line": "Line3"
-             },
-             "key_figures": [],
-             "start_date": "2025-04-09",
-             "end_date": "2025-04-11"
-         }
-         ```
-    6. **Manejo de errores**:
-       - Si los campos en `key_values` o `key_figures` no están en `list_fields`, ignora la consulta y devuelve un mensaje
-         de error solicitando campos válidos.
-       - Si las fechas proporcionadas no tienen el formato correcto (YYYY-MM-DD), solicita al usuario que las corrija.
-       - Si los rangos (`min` o `max`) no son numéricos, devuelve un error solicitando valores válidos.
+    7. **Manejo de errores**:
+       - Si `tool_name` no es válido, solicita al usuario usar un nombre de `list_available_tools`.
+       - Si los campos no son válidos, solicita corrección basada en `list_fields`.
+       - Si las fechas o rangos son inválidos, solicita formato correcto (YYYY-MM-DD para fechas, numéricos para rangos).
     """
     try:
+        if tool_name not in config.get("tools", {}):
+            return json.dumps({
+                "status": "error",
+                "message": f"Tool {tool_name} not configured",
+                "results": [],
+                "analysis_notes": [f"Tool {tool_name} not configured"]
+            }, ensure_ascii=False)
+        
+        minio_client, qdrant_manager = get_tool_client(tool_name)
         key_values = key_values or {}
         normalized_key_figures = []
         if key_figures:
@@ -400,7 +447,7 @@ def analyze_compliance(
                 elif isinstance(item, dict) and "field" in item:
                     normalized_key_figures.append(item["field"])
         if not normalized_key_figures:
-            fields_info = json.loads(list_fields(ctx))
+            fields_info = json.loads(list_fields(ctx, tool_name))
             if fields_info["status"] != "success":
                 return json.dumps({
                     "status": "error",
@@ -409,13 +456,13 @@ def analyze_compliance(
                     "analysis_notes": ["No se pudieron obtener campos válidos"]
                 }, ensure_ascii=False)
             normalized_key_figures = fields_info["key_figures"]
-            logger.info(f"No key_figures provided, using all numeric fields: {normalized_key_figures}")
+            logger.info(f"No key_figures provided, using all numeric fields for {tool_name}: {normalized_key_figures}")
         else:
             normalized_key_figures = normalized_key_figures or []
 
-        fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates)
+        fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates, tool_name=tool_name)
         valid_values = fields_info["key_values"]
-        logger.info(f"Analyzing data: key_figures={key_figures}, key_values={key_values}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
+        logger.info(f"Analyzing data for {tool_name}: key_figures={key_figures}, key_values={key_values}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
         identifier_field = None
         identifier_value = None
         if valid_values:
@@ -428,7 +475,7 @@ def analyze_compliance(
                 identifier_field = next(iter(valid_values))
                 identifier_value = key_values.get(identifier_field)
         logger.info(f"Selected identifier_field: {identifier_field}, identifier_value: {identifier_value}")
-        fetch_result = json.loads(fetch_mes_data(ctx, key_values, key_figures, start_date, end_date, specific_dates))
+        fetch_result = json.loads(fetch_data(ctx, tool_name, key_values, key_figures, start_date, end_date, specific_dates))
         analysis_notes = [fetch_result.get("message", "")] if fetch_result.get("message") else []
         if fetch_result["status"] == "no_data":
             return json.dumps({
@@ -449,17 +496,16 @@ def analyze_compliance(
                 "analysis_notes": analysis_notes
             }, ensure_ascii=False)
         
-        # Procesar SOPs para cada key_value individual
         sop_content = {}
         for field, value in key_values.items():
-            pdf_result = json.loads(get_pdf_content(ctx, {field: value}))
+            pdf_result = json.loads(get_pdf_content(ctx, tool_name, {field: value}))
             if pdf_result["status"] == "success":
                 sop_content[f"{field}={value}"] = pdf_result.get("content", "")
-                logger.info(f"SOP content for {field}={value}: {sop_content[f'{field}={value}'][:100]}...")
+                logger.info(f"SOP content for {field}={value} in {tool_name}: {sop_content[f'{field}={value}'][:100]}...")
             else:
                 sop_content[f"{field}={value}"] = ""
-                analysis_notes.append(f"Failed to load SOP for {field}={value}: {pdf_result['message']}")
-                logger.warning(f"Failed to load SOP for {field}={value}: {pdf_result['message']}")
+                analysis_notes.append(f"Failed to load SOP for {field}={value} in {tool_name}: {pdf_result['message']}")
+                logger.warning(f"Failed to load SOP for {field}={value} in {tool_name}: {pdf_result['message']}")
 
         results = []
         for record in fetch_result["data"]:
@@ -469,7 +515,7 @@ def analyze_compliance(
                 "metrics": {k: record[k] for k in normalized_key_figures if k in record and record[k] is not None}
             }
             results.append(analysis)
-        analysis_notes.append(f"Filtered data for {key_values}")
+        analysis_notes.append(f"Filtered data for {tool_name} with {key_values}")
         period = "all dates"
         if specific_dates:
             period = f"Specific dates: {', '.join(specific_dates)}"
@@ -485,7 +531,7 @@ def analyze_compliance(
             "analysis_notes": analysis_notes
         }, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Compliance analysis failed: {str(e)}")
+        logger.error(f"Compliance analysis failed for {tool_name}: {str(e)}")
         return json.dumps({
             "status": "error",
             "message": str(e),
@@ -494,85 +540,83 @@ def analyze_compliance(
         }, ensure_ascii=False)
 
 @mcp.tool()
-def get_mes_dataset(
-    ctx: Context,
-    key_values: Optional[Dict[str, str]] = None,
-    key_figures: Optional[List[Dict]] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    specific_dates: Optional[List[str]] = None
-) -> str:
+def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
     """
-    Recupera datos del sistema MES aplicando filtros por campos categóricos, métricas numéricas y fechas.
+    Recupera datos de un área específica aplicando filtros por campos categóricos, métricas numéricas y fechas.
 
     INSTRUCCIONES PARA EL LLM:
-    - Antes de construir la consulta, llama a `list_fields` para obtener los campos válidos (`key_figures` y `key_values`).
-    - Usa solo campos presentes en la respuesta de `list_fields`.
-    - Usa `specific_dates` (lista de fechas YYYY-MM-DD) para días concretos, o `start_date` y `end_date` (YYYY-MM-DD) para rangos. No combines ambos.
-    - Para `key_figures`, acepta una lista de diccionarios con campos numéricos y rangos opcionales (e.g., [{"field": "defects", "min": 1, "max": 5}]).
-    - Si los campos o fechas no son válidos, devuelve un mensaje de error solicitando corrección.
-
-    Ejemplos de uso:
-    1. Fechas específicas con rangos:
+    1. **Seleccionar el tool_name**: Usa `list_available_tools` para obtener las áreas disponibles y elige el `tool_name` adecuado.
+    2. **Obtener campos válidos**: Llama a `list_fields` con el `tool_name` para obtener los campos `key_figures` y `key_values` específicos.
+    3. **Validar campos**: Usa solo campos de `list_fields` para el `tool_name` seleccionado.
+    4. **Estructura de la consulta**: Sigue esta estructura:
+       ```json
        {
-           "key_values": {"machine": "ModelA"},
-           "key_figures": [{"field": "defects", "min": 1, "max": 5}],
-           "specific_dates": ["2025-04-09", "2025-04-11"]
+           "tool_name": "<nombre_del_area>",
+           "key_values": {
+               "<campo_categórico_1>": "<valor>",
+               "<campo_categórico_2>": "<valor>"
+           },
+           "key_figures": [
+               {"field": "<campo_numérico_1>", "min": <número>, "max": <número>},
+               {"field": "<campo_numérico_2>", "min": <número>, "max": <número>}
+           ],
+           // Usa EITHER specific_dates OR start_date/end_date, no ambos
+           "specific_dates": ["YYYY-MM-DD", ...], // Para fechas específicas
+           // O
+           "start_date": "YYYY-MM-DD", // Para un rango de fechas
+           "end_date": "YYYY-MM-DD"
        }
-    2. Rango de fechas sin rangos:
-       {
-           "key_values": {"machine": "ModelA"},
-           "key_figures": [{"field": "defects"}],
-           "start_date": "2025-04-09",
-           "end_date": "2025-04-11"
-       }
-    4. Rango de fechas con multiples rangos:
-       {
-           "key_values": {"machine": "ModelA"},
-           "key_figures": [{"field": "defects", "min": 1, "max": 5}, {"field": "temperature", "min": 20}],
-           "start_date": "2025-04-09",
-           "end_date": "2025-04-11"
-       }
-    5. Rango de fechas con un rango y uno sin rango:
-         {  
-            "key_values": {"machine": "ModelA"},  
-            "key_figures": [{"field": "defects", "min": 1, "max": 5}, {"field": "temperature"}],
-            "start_date": "2025-04-09",
-            "end_date": "2025-04-11"
+       ```
+    5. **Ejemplos**:
+       - Para `manufacturing`:
+         ```json
+         {
+             "tool_name": "manufacturing",
+             "key_values": {"machine": "ModelA"},
+             "key_figures": [{"field": "temperature"}],
+             "start_date": "2025-07-18",
+             "end_date": "2025-07-20"
          }
-    6. Sin filtros:
-       {
-           "key_values": {"machine": "ModelA"},
-           "key_figures": [],
-           "start_date": "2025-04-09",
-           "end_date": "2025-04-11"
-       }
-
-    Args:
-        ctx (Context): Contexto FastMCP.
-        key_values (Optional[Dict[str, str]]): Filtros categóricos.
-        key_figures (Optional[List[Dict]]): Métricas numéricas con rangos opcionales.
-        start_date (Optional[str]): Fecha inicio (YYYY-MM-DD).
-        end_date (Optional[str]): Fecha fin (YYYY-MM-DD).
-        specific_dates (Optional[List[str]]): Lista de fechas específicas (YYYY-MM-DD).
-
-    Returns:
-        str: JSON con los datos filtrados.
+         ```
+       - Para `human_resources`:
+         ```json
+         {
+             "tool_name": "human_resources",
+             "key_values": {"employee_id": "001"},
+             "specific_dates": ["2025-07-18"]
+         }
+         ```
+    6. **Manejo de errores**: Si los campos o fechas son inválidos, solicita corrección basada en `list_fields`.
     """
     try:
-        fetch_result = json.loads(fetch_mes_data(ctx, key_values, key_figures, start_date, end_date, specific_dates))
+        if tool_name not in config.get("tools", {}):
+            return json.dumps({
+                "status": "error",
+                "message": f"Tool {tool_name} not configured",
+                "data": []
+            }, ensure_ascii=False)
+        
+        fetch_result = json.loads(fetch_data(ctx, tool_name, key_values, key_figures, start_date, end_date, specific_dates))
         if fetch_result["status"] != "success":
-            logger.info(f"No data retrieved: {fetch_result.get('message', 'No message')}")
+            logger.info(f"No data retrieved for {tool_name}: {fetch_result.get('message', 'No message')}")
             return json.dumps([], ensure_ascii=False)
         return json.dumps(fetch_result["data"], ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Dataset retrieval failed: {str(e)}")
+        logger.error(f"Dataset retrieval failed for {tool_name}: {str(e)}")
         return json.dumps([], ensure_ascii=False)
 
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
     """
-    Lista las herramientas disponibles en el MCP, incluyendo las definidas por el usuario y las internas de FastMCP.
+    Lista las áreas (tools) disponibles en el MCP.
+
+    INSTRUCCIONES PARA EL LLM:
+    1. **Uso**: Llama a esta función para obtener la lista de áreas disponibles (e.g., "manufacturing", "human_resources").
+    2. **Resultado**: Devuelve un JSON con los nombres de las áreas, que deben usarse como `tool_name` en otras funciones.
+    3. **Ejemplo de consulta**:
+       ```json
+       {}
+       ```
     """
     try:
         tools = []
@@ -643,6 +687,5 @@ def list_available_tools(ctx: Context) -> str:
             "count": 0,
             "tools": []
         }, ensure_ascii=False)
-
 if __name__ == "__main__":
     mcp.run()

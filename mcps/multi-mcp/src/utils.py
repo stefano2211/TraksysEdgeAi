@@ -99,10 +99,13 @@ class DataValidator:
         return {"has_data": bool(covered_dates), "covered_dates": covered_dates, "message": message}
 
     @staticmethod
-    def validate_fields(ctx: Context, key_figures: List, key_values: Dict, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> Dict:
+    def validate_fields(ctx: Context, key_figures: List, key_values: Dict, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None, tool_name: str = None) -> Dict:
         """Valida los campos proporcionados contra los campos disponibles."""
         from main import list_fields  # Importar aquí para evitar circularidad
-        fields_info = json.loads(list_fields(ctx))
+        if not tool_name:
+            raise ValueError("tool_name is required for field validation")
+        logger.info(f"Validating fields for tool_name: {tool_name}")
+        fields_info = json.loads(list_fields(ctx, tool_name))
         if fields_info["status"] != "success":
             raise ValueError("Failed to validate fields")
         if (start_date and not end_date) or (end_date and not start_date):

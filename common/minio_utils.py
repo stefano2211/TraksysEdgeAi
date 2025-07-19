@@ -10,21 +10,20 @@ import os
 logger = logging.getLogger(__name__)
 
 class MinioClient:
-    def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False, tool_name: str = "manufacturing", sop_prefix: str = "sop-pdfs/", mes_logs_prefix: str = "mes-logs/"):
+    def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False, tool_name: str = "manufacturing", bucket: str = "compliance-data", sop_prefix: str = "sop-pdfs/", mes_logs_prefix: str = "mes-logs/"):
         if not all([endpoint, access_key, secret_key]):
             raise ValueError("MinIO endpoint, access_key, and secret_key must be provided")
         self.client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
-        self.bucket_name = tool_name.lower().replace(" ", "-")  # Ejemplo: "Manufacturing Compliance Processor" -> "manufacturing"
-        self.sop_prefix = sop_prefix  # Prefijo para PDFs desde config.yaml
-        self.mes_logs_prefix = mes_logs_prefix  # Prefijo para logs JSON desde config.yaml
+        self.bucket_name = bucket  # Usa el bucket especificado en config.yaml
+        self.sop_prefix = sop_prefix
+        self.mes_logs_prefix = mes_logs_prefix
 
     def ensure_bucket(self):
-        """Crea el bucket principal y los prefijos sop-pdfs/ y mes-logs/ si no existen."""
+        """Crea el bucket y los prefijos sop-pdfs/ y mes-logs/ si no existen."""
         try:
             if not self.client.bucket_exists(self.bucket_name):
                 self.client.make_bucket(self.bucket_name)
                 logger.info(f"Bucket {self.bucket_name} created.")
-            # Crear prefijos subiendo objetos vacíos como marcadores
             empty_data = io.BytesIO(b"")
             self.client.put_object(self.bucket_name, f"{self.sop_prefix}.marker", empty_data, 0)
             self.client.put_object(self.bucket_name, f"{self.mes_logs_prefix}.marker", empty_data, 0)
@@ -34,9 +33,8 @@ class MinioClient:
             raise
 
     def get_pdf_content(self, filename: str) -> str:
-        """Extrae el contenido de un PDF desde MinIO, usando el prefijo sop-pdfs/."""
         try:
-            object_name = f"{self.sop_prefix}{filename}"  # Ejemplo: manufacturing/sop-pdfs/ModelA.pdf
+            object_name = f"{self.sop_prefix}{filename}"
             response = self.client.get_object(self.bucket_name, object_name)
             pdf_data = response.read()
             response.close()
@@ -67,7 +65,6 @@ class MinioClient:
             }, ensure_ascii=False)
 
     def get_all_json_logs(self) -> List[Dict]:
-        """Lee todos los archivos JSON del prefijo mes-logs/."""
         try:
             objects = self.client.list_objects(self.bucket_name, prefix=self.mes_logs_prefix, recursive=True)
             logs = []

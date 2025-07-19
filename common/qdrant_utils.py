@@ -1,6 +1,7 @@
 import logging
 import json
 import time
+from typing import Optional, List, Dict
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from sentence_transformers import SentenceTransformer
@@ -8,13 +9,13 @@ from sentence_transformers import SentenceTransformer
 logger = logging.getLogger(__name__)
 
 class QdrantManager:
-    def __init__(self, host: str, port: int, sop_cache_ttl: int):
-        if not host or not port:
-            raise ValueError("Qdrant host and port must be provided")
+    def __init__(self, host: str, port: int, collections: List[str], sop_cache_ttl: int):
+        if not host or not port or not collections:
+            raise ValueError("Qdrant host, port, and collections must be provided")
         self.client = QdrantClient(host=host, port=port)
         self.model = SentenceTransformer('all-MiniLM-L6-v2')
         self.sop_cache_ttl = sop_cache_ttl  # Tiempo de vida de la caché en segundos
-        self.collection_name = "sop_cache"
+        self.collection_name = collections[0]  # Usar la primera colección
         self.initialize_collection()
 
     def initialize_collection(self):
@@ -33,14 +34,9 @@ class QdrantManager:
     def upsert_sop(self, key_values: dict, content: str, point_id: str):
         """Inserta o actualiza un SOP en la colección sop_cache con un timestamp de expiración."""
         try:
-            # Generar embedding solo para los key_values
             key_values_str = json.dumps(key_values, sort_keys=True)
             embedding = self.model.encode(key_values_str).tolist()
-            
-            # Calcular tiempo de expiración
             expiration_timestamp = int(time.time()) + self.sop_cache_ttl
-            
-            # Crear punto con key_values y contenido
             point = models.PointStruct(
                 id=point_id,
                 vector=embedding,
@@ -61,8 +57,6 @@ class QdrantManager:
         try:
             key_values_str = json.dumps(key_values, sort_keys=True)
             embedding = self.model.encode(key_values_str).tolist()
-            
-            # Filtrar puntos no expirados
             current_time = int(time.time())
             filter_conditions = models.Filter(
                 must=[
@@ -74,8 +68,6 @@ class QdrantManager:
                     )
                 ]
             )
-            
-            # Buscar puntos con el embedding más cercano
             results = self.client.search(
                 collection_name=self.collection_name,
                 query_vector=embedding,
@@ -83,10 +75,7 @@ class QdrantManager:
                 limit=1,
                 with_payload=True
             )
-            
-            # Eliminar puntos caducados
             self._clean_expired_points(current_time)
-            
             if results and results[0].payload.get("key_values") == key_values:
                 logger.info(f"Cache hit for SOP with key_values {key_values}")
                 return {
@@ -94,7 +83,6 @@ class QdrantManager:
                     "content": results[0].payload.get("content", ""),
                     "key_values": key_values
                 }
-            
             logger.info(f"Cache miss for SOP with key_values {key_values}")
             return {"status": "not_found", "content": "", "key_values": key_values}
         except Exception as e:
