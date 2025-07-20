@@ -22,44 +22,27 @@ config = expand_env_vars(config)
 logger.info(f"API URL: {config['api']['url']}, TOKEN API URL: {config['api']['token_url']}")
 
 mcp = FastMCP("Multi-Area Compliance Processor")
-tool_name = mcp.name.lower().replace(" ", "-")  # Ejemplo: "multi-area-compliance-processor"
+tool_name = mcp.name.lower().replace(" ", "-")
 
-# Inicialización de clientes globales
 auth_client = AuthClient(
-    api_url=config['api']['url'],
-    token_api_url=config['api']['token_url']
+    api_url=config["api"]["url"],
+    token_api_url=config["api"]["token_url"]
 )
 encryption_manager = EncryptionManager(
     os.getenv("ENCRYPTION_KEY")
 )
+qdrant_manager = QdrantManager(
+    host=os.getenv("QDRANT_HOST"),
+    port=int(os.getenv("QDRANT_PORT")),
+    collections=config.get("qdrant", {}).get("collections", ["sop_cache"]),
+    sop_cache_ttl=config.get("qdrant", {}).get("sop_cache_ttl", 36000)
+)
 
-# Inicializar buckets para todos los tools al arrancar
-def initialize_buckets():
-    for tool_name in config.get("tools", {}):
-        tool_config = config["tools"][tool_name]
-        minio_client = MinioClient(
-            endpoint=os.getenv("MINIO_ENDPOINT"),
-            access_key=os.getenv("MINIO_ACCESS_KEY"),
-            secret_key=os.getenv("MINIO_SECRET_KEY"),
-            secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
-            tool_name=tool_name,
-            bucket=tool_config["minio"]["bucket"],
-            sop_prefix=tool_config["minio"]["sop_prefix"],
-            mes_logs_prefix=tool_config["minio"]["mes_logs_prefix"]
-        )
-        minio_client.ensure_bucket()
-        logger.info(f"Bucket {tool_config['minio']['bucket']} initialized for tool {tool_name}")
-
-# Llamar a initialize_buckets al inicio
-initialize_buckets()
-
-def get_tool_client(tool_name: str):
-    """Devuelve instancias de MinioClient y QdrantManager para el tool especificado."""
+def get_minio_client(tool_name: str) -> MinioClient:
     if tool_name not in config.get("tools", {}):
         raise ValueError(f"Tool {tool_name} not configured")
-    
     tool_config = config["tools"][tool_name]
-    minio_client = MinioClient(
+    return MinioClient(
         endpoint=os.getenv("MINIO_ENDPOINT"),
         access_key=os.getenv("MINIO_ACCESS_KEY"),
         secret_key=os.getenv("MINIO_SECRET_KEY"),
@@ -70,19 +53,16 @@ def get_tool_client(tool_name: str):
         mes_logs_prefix=tool_config["minio"]["mes_logs_prefix"]
     )
 
-    try:
-        qdrant_manager = QdrantManager(
-            host=os.getenv("QDRANT_HOST"),
-            port=int(os.getenv("QDRANT_PORT")),
-            collections=tool_config["qdrant"]["collections"],
-            sop_cache_ttl=tool_config["qdrant"]["sop_cache_ttl"]
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize QdrantManager for {tool_name}: {str(e)}. Falling back to MinIO for SOPs.")
-        qdrant_manager = None
+def initialize_buckets():
+    for tool_name in config.get("tools", {}):
+        minio_client = get_minio_client(tool_name)
+        minio_client.ensure_bucket()
 
+initialize_buckets()
+
+def get_tool_client(tool_name: str):
+    minio_client = get_minio_client(tool_name)
     return minio_client, qdrant_manager
-
 
 def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
     try:
@@ -125,7 +105,6 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]
         else:
             normalized_key_figures = normalized_key_figures or []
 
-        # Pasar tool_name a DataValidator.validate_fields
         logger.info(f"Validating fields in fetch_data for tool_name: {tool_name}")
         fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates, tool_name=tool_name)
         
@@ -139,7 +118,7 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]
                     "data": [],
                     "covered_dates": []
                 }, ensure_ascii=False)
-        else:  # api
+        else:
             api_endpoint = tool_config.get("api_endpoint")
             if not api_endpoint or api_endpoint == "null":
                 return json.dumps({
@@ -640,10 +619,8 @@ def list_available_tools(ctx: Context) -> str:
                             for param_name, param in signature.parameters.items()
                             if param_name != 'ctx'
                         ]
-                        docstring = inspect.getdoc(tool_func) or "Sin descripción disponible."
                         tools.append({
                             "name": tool_name,
-                            "description": docstring,
                             "parameters": parameters
                         })
         except Exception as e:
@@ -665,10 +642,8 @@ def list_available_tools(ctx: Context) -> str:
                                 for param_name, param in signature.parameters.items()
                                 if param_name != 'ctx'
                             ]
-                            docstring = inspect.getdoc(obj) or "Sin descripción disponible."
                             tools.append({
                                 "name": name,
-                                "description": docstring,
                                 "parameters": parameters
                             })
                     except Exception as e:
@@ -687,5 +662,6 @@ def list_available_tools(ctx: Context) -> str:
             "count": 0,
             "tools": []
         }, ensure_ascii=False)
+
 if __name__ == "__main__":
     mcp.run()
