@@ -58,7 +58,7 @@ def init_db():
             )
         """)
         
-        # Tabla para empleados
+        # Tabla para empleados (date antes que hire_date)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS employees (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,11 +68,11 @@ def init_db():
                 shift TEXT NOT NULL,
                 assigned_machine TEXT NOT NULL,
                 production_line TEXT NOT NULL,
+                date TEXT NOT NULL,  
                 hire_date TEXT NOT NULL,
                 termination_date TEXT,
                 hours_worked REAL NOT NULL,
-                training_status TEXT NOT NULL,
-                date TEXT NOT NULL
+                training_status TEXT NOT NULL
             )
         """)
         
@@ -121,26 +121,26 @@ def init_db():
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, fixed_records)
         
-        # Insertar registros fijos para empleados
+        # Insertar registros fijos para empleados (date antes que hire_date en la tupla)
         cursor.execute("SELECT COUNT(*) FROM employees")
         count = cursor.fetchone()[0]
         if count == 0:
             fixed_records = [
-                ("001", "John Doe", "Operator", "Morning", "ModelA", "Line3", "2024-01-15", None, 8.0, "Completed", "2025-04-10"),
-                ("002", "Jane Smith", "Supervisor", "Evening", "ModelB", "Line2", "2023-06-20", None, 7.5, "In Progress", "2025-04-10"),
-                ("003", "Carlos Lopez", "Technician", "Night", "ModelC", "Line1", "2024-03-10", None, 8.5, "Completed", "2025-04-11"),
-                ("004", "Maria Garcia", "Operator", "Morning", "ModelD", "Line3", "2024-02-01", None, 8.0, "Completed", "2025-04-10"),
-                ("005", "Ahmed Khan", "Supervisor", "Evening", "ModelE", "Line2", "2023-09-15", None, 7.0, "In Progress", "2025-04-10"),
-                ("006", "Sophie Chen", "Operator", "Morning", "ModelF", "Line1", "2024-05-05", None, 8.0, "Completed", "2025-04-10"),
-                ("007", "David Brown", "Technician", "Night", "ModelA", "Line1", "2023-11-30", None, 8.5, "Completed", "2025-04-09"),
-                ("008", "Emma Wilson", "Operator", "Morning", "ModelB", "Line2", "2024-04-12", None, 7.5, "In Progress", "2025-04-09"),
-                ("009", "Lucas Martinez", "Supervisor", "Evening", "ModelC", "Line1", "2023-07-25", None, 8.0, "Completed", "2025-04-09"),
-                ("010", "Olivia Lee", "Operator", "Morning", "ModelD", "Line3", "2024-01-20", None, 8.0, "Completed", "2025-04-11"),
+                ("001", "John Doe", "Operator", "Morning", "ModelA", "Line3", "2025-04-10", "2024-01-15", None, 8.0, "Completed"),
+                ("002", "Jane Smith", "Supervisor", "Evening", "ModelB", "Line2", "2025-04-10", "2023-06-20", None, 7.5, "In Progress"),
+                ("003", "Carlos Lopez", "Technician", "Night", "ModelC", "Line1", "2025-04-11", "2024-03-10", None, 8.5, "Completed"),
+                ("004", "Maria Garcia", "Operator", "Morning", "ModelD", "Line3", "2025-04-10", "2024-02-01", None, 8.0, "Completed"),
+                ("005", "Ahmed Khan", "Supervisor", "Evening", "ModelE", "Line2", "2025-04-10", "2023-09-15", None, 7.0, "In Progress"),
+                ("006", "Sophie Chen", "Operator", "Morning", "ModelF", "Line1", "2025-04-10", "2024-05-05", None, 8.0, "Completed"),
+                ("007", "David Brown", "Technician", "Night", "ModelA", "Line1", "2025-04-09", "2023-11-30", None, 8.5, "Completed"),
+                ("008", "Emma Wilson", "Operator", "Morning", "ModelB", "Line2", "2025-04-09", "2024-04-12", None, 7.5, "In Progress"),
+                ("009", "Lucas Martinez", "Supervisor", "Evening", "ModelC", "Line1", "2025-04-09", "2023-07-25", None, 8.0, "Completed"),
+                ("010", "Olivia Lee", "Operator", "Morning", "ModelD", "Line3", "2025-04-11", "2024-01-20", None, 8.0, "Completed"),
             ]
             cursor.executemany("""
                 INSERT INTO employees (
                     employee_id, name, role, shift, assigned_machine, production_line,
-                    hire_date, termination_date, hours_worked, training_status, date
+                    date, hire_date, termination_date, hours_worked, training_status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, fixed_records)
         
@@ -402,7 +402,7 @@ async def get_all_employees(
         
         base_query = """
             SELECT id, employee_id, name, role, shift, assigned_machine, production_line,
-                   hire_date, termination_date, hours_worked, training_status, date
+                   date, hire_date, termination_date, hours_worked, training_status
             FROM employees
         """
         
@@ -438,11 +438,11 @@ async def get_all_employees(
                 "shift": row[4],
                 "assigned_machine": row[5],
                 "production_line": row[6],
-                "hire_date": row[7],
-                "termination_date": row[8],
-                "hours_worked": row[9],
-                "training_status": row[10],
-                "date": row[11]
+                "date": row[7],  # Nuevo orden: date antes que hire_date
+                "hire_date": row[8],
+                "termination_date": row[9],
+                "hours_worked": row[10],
+                "training_status": row[11]
             })
         return employees
     except Exception as e:
@@ -467,7 +467,7 @@ async def get_employee_records(
         
         query = """
             SELECT id, employee_id, name, role, shift, assigned_machine, production_line,
-                   hire_date, termination_date, hours_worked, training_status, date
+                   date, hire_date, termination_date, hours_worked, training_status
             FROM employees 
             WHERE employee_id = ?
         """
@@ -503,11 +503,11 @@ async def get_employee_records(
                 "shift": row[4],
                 "assigned_machine": row[5],
                 "production_line": row[6],
-                "hire_date": row[7],
-                "termination_date": row[8],
-                "hours_worked": row[9],
-                "training_status": row[10],
-                "date": row[11]
+                "date": row[7],  # Nuevo orden: date antes que hire_date
+                "hire_date": row[8],
+                "termination_date": row[9],
+                "hours_worked": row[10],
+                "training_status": row[11]
             })
         
         if not records:

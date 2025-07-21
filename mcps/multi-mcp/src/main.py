@@ -96,7 +96,7 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]
             if fields_info["status"] != "success":
                 return json.dumps({
                     "status": "error",
-                    "message": "No se pudieron obtener campos válidos",
+                    "message": "Could not retrieve valid fields",
                     "count": 0,
                     "data": [],
                     "covered_dates": []
@@ -113,7 +113,7 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]
             if not all_data:
                 return json.dumps({
                     "status": "no_data",
-                    "message": f"No se encontraron datos en el bucket {minio_client.bucket}/{minio_client.mes_logs_prefix}",
+                    "message": f"No data found in bucket {minio_client.bucket}/{minio_client.mes_logs_prefix}",
                     "count": 0,
                     "data": [],
                     "covered_dates": []
@@ -145,7 +145,7 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]
                 if (not specific_dates and not start_date and not end_date) or \
                    (specific_dates and record_date in specific_dates) or \
                    (start_date and end_date and start_date <= record_date <= end_date):
-                    item = {"date": record_date or "Desconocida"}
+                    item = {"date": record_date or "Unknown"}
                     for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
                         if field in record:
                             item[field] = record[field]
@@ -202,27 +202,27 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]
 @mcp.tool()
 def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) -> str:
     """
-    Recupera el contenido de un archivo PDF para un área específica usando Qdrant como caché si está disponible.
+    Retrieves the content of a PDF file for a specific area, using Qdrant as a cache if available.
 
-    INSTRUCCIONES PARA EL LLM:
-    1. **Seleccionar el tool_name**: Usa `list_available_tools` para obtener las áreas disponibles y elige el `tool_name` adecuado (e.g., "manufacturing", "human_resources").
-    2. **Validar key_values**: Asegúrate de que `key_values` contenga exactamente un par clave-valor (e.g., {"machine": "ModelA"} o {"employee_id": "001"}) basado en los campos categóricos de `list_fields` para el `tool_name` seleccionado.
-    3. **Generar filename**: El filename se deriva del valor en `key_values` (e.g., "ModelA.pdf" para {"machine": "ModelA"}).
-    4. **Ejemplo de consulta**:
+    INSTRUCTIONS FOR THE LLM:
+    1. **Select the tool_name**: Use `list_available_tools` to obtain the available areas and choose the appropriate `tool_name` (e.g., "manufacturing", "human_resources").
+    2. **Validate key_values**: Ensure `key_values` contains exactly one key-value pair (e.g., {"machine": "ModelA"} or {"employee_id": "001"}) based on the categorical fields from `list_fields` for the selected `tool_name`.
+    3. **Generate filename**: The filename is derived from the value in `key_values` (e.g., "ModelA.pdf" for {"machine": "ModelA"}).
+    4. **Query example**:
        ```json
        {
            "tool_name": "manufacturing",
            "key_values": {"machine": "ModelA"}
        }
        ```
-       O para `human_resources`:
+       Or for `human_resources`:
        ```json
        {
            "tool_name": "human_resources",
            "key_values": {"employee_id": "001"}
        }
        ```
-    5. **Manejo de errores**: Si `key_values` tiene más de un par o el archivo no existe, devuelve un error solicitando un solo par clave-valor válido.
+    5. **Error handling**: If `key_values` has more than one pair or the file does not exist, return an error requesting a single valid key-value pair.
     """
     try:
         if tool_name not in config.get("tools", {}):
@@ -280,24 +280,24 @@ def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) ->
 @mcp.tool()
 def list_fields(ctx: Context, tool_name: str) -> str:
     """
-    Lista los campos disponibles en el dataset de un área específica.
+    Lists the available fields in the dataset of a specific area.
 
-    INSTRUCCIONES PARA EL LLM:
-    1. **Seleccionar el tool_name**: Usa `list_available_tools` para obtener las áreas disponibles y elige el `tool_name` adecuado (e.g., "manufacturing", "human_resources").
-    2. **Uso**: Llama a esta función con el `tool_name` para obtener los campos `key_figures` (numéricos) y `key_values` (categóricos) específicos de esa área.
-    3. **Ejemplo de consulta**:
+    INSTRUCTIONS FOR THE LLM:
+    1. **Select the tool_name**: Use `list_available_tools` to obtain the available areas and choose the appropriate `tool_name` (e.g., "manufacturing", "human_resources").
+    2. **Usage**: Call this function with the `tool_name` to retrieve the `key_figures` (numeric) and `key_values` (categorical) fields specific to that area.
+    3. **Query example**:
        ```json
        {
            "tool_name": "manufacturing"
        }
        ```
-       O:
+       Or:
        ```json
        {
            "tool_name": "human_resources"
        }
        ```
-    4. **Resultado**: Devuelve un JSON con `key_figures` y `key_values` que deben usarse en otras funciones como `fetch_data` o `analyze_compliance`.
+    4. **Result**: Returns a JSON with `key_figures` and `key_values` to be used in other functions like `fetch_data` or `analyze_compliance`.
     """
     try:
         if tool_name not in config.get("tools", {}):
@@ -327,7 +327,7 @@ def list_fields(ctx: Context, tool_name: str) -> str:
         if not all_data:
             return json.dumps({
                 "status": "no_data",
-                "message": f"No se encontraron registros en el sistema {tool_name}",
+                "message": f"No records found in the system {tool_name}",
                 "key_figures": [],
                 "key_values": {}
             }, ensure_ascii=False)
@@ -351,61 +351,61 @@ def list_fields(ctx: Context, tool_name: str) -> str:
 @mcp.tool()
 def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
     """
-    Analiza el cumplimiento de los datos de un área específica contra reglas SOP.
+    Analyzes data compliance for a specific area against SOP rules.
 
-    INSTRUCCIONES PARA EL LLM:
-    1. **Seleccionar el tool_name**: Usa `list_available_tools` para obtener las áreas disponibles y elige el `tool_name` adecuado (e.g., "manufacturing", "human_resources").
-    2. **Obtener campos válidos**: Llama a `list_fields` con el Ejemplo:`tool_name` para obtener los campos `key_figures` y `key_values` específicos de esa área.
-    3. **Validar campos**: Usa solo campos presentes en la respuesta de `list_fields` para el `tool_name` seleccionado.
-    4. **Estructura de la consulta**: Sigue esta estructura:
+    INSTRUCTIONS FOR THE LLM:
+    1. **Select the tool_name**: Use `list_available_tools` to obtain the available areas and choose the appropriate `tool_name` (e.g., "manufacturing", "human_resources").
+    2. **Obtain valid fields**: Call `list_fields` with the `tool_name` to retrieve the `key_figures` and `key_values` fields specific to that area.
+    3. **Validate fields**: Use only fields present in the response from `list_fields` for the selected `tool_name`.
+    4. **Query structure**: Follow this structure:
        ```json
        {
-           "tool_name": "<nombre_del_area>",
+           "tool_name": "<area_name>",
            "key_values": {
-               "<campo_categórico_1>": "<valor>",
-               "<campo_categórico_2>": "<valor>"
+               "<categorical_field_1>": "<value>",
+               "<categorical_field_2>": "<value>"
            },
            "key_figures": [
-               {"field": "<campo_numérico_1>", "min": <número>, "max": <número>},
-               {"field": "<campo_numérico_2>", "min": <número>, "max": <número>}
+               {"field": "<numeric_field_1>", "min": <number>, "max": <number>},
+               {"field": "<numeric_field_2>", "min": <number>, "max": <number>}
            ],
-           // Usa EITHER specific_dates OR start_date/end_date, no ambos
-           "specific_dates": ["YYYY-MM-DD", ...], // Para fechas específicas
-           // O
-           "start_date": "YYYY-MM-DD", // Para un rango de fechas
+           // Use EITHER specific_dates OR start_date/end_date, not both
+           "specific_dates": ["YYYY-MM-DD", ...], // For specific dates
+           // OR
+           "start_date": "YYYY-MM-DD", // For a date range
            "end_date": "YYYY-MM-DD"
        }
        ```
-       Nota: `min` y `max` son opcionales. Si no se especifican, se incluyen todos los valores.
-    5. **Cuándo usar specific_dates vs. start_date/end_date**:
-       - Usa `specific_dates` para días concretos (e.g., "solo el 18 de julio de 2025"). Ejemplo: `specific_dates: ["2025-07-18"]`.
-       - Usa `start_date` y `end_date` para rangos (e.g., "del 18 al 20 de julio de 2025"). Ejemplo: `start_date: "2025-07-18", end_date: "2025-07-20"`.
-       - No combines ambos.
-       - Omite fechas si no se especifican.
-    6. **Ejemplo por área**:
-       - Para `manufacturing`:
+       Note: `min` and `max` are optional. If not specified, all values are included.
+    5. **When to use specific_dates vs. start_date/end_date**:
+       - Use `specific_dates` for specific days (e.g., "only July 18, 2025"). Example: `specific_dates: ["2025-07-18"]`.
+       - Use `start_date` and `end_date` for ranges (e.g., "from July 18 to 20, 2025"). Example: `start_date: "2025-07-18", end_date: "2025-07-20"`.
+       - Do not combine both.
+       - Omit dates if not specified.
+    6. **Examples by area**:
+       - For `manufacturing`:
          ```json
          {
              "tool_name": "manufacturing",
-             "key_values": {"machine": "ModelA","production_line": "Line3},
+             "key_values": {"machine": "ModelA", "production_line": "Line3"},
              "key_figures": [{"field": "temperature", "min": 70, "max": 80}],
              "start_date": "2025-07-18",
              "end_date": "2025-07-20"
          }
          ```
-       - Para `human_resources`:
+       - For `human_resources`:
          ```json
          {
              "tool_name": "human_resources",
-             "key_values": {"employee_id": "001","production_line": "Line3"},
+             "key_values": {"employee_id": "001", "production_line": "Line3"},
              "key_figures": [{"field": "hours_worked", "min": 8}],
              "specific_dates": ["2025-07-18"]
          }
          ```
-    7. **Manejo de errores**:
-       - Si `tool_name` no es válido, solicita al usuario usar un nombre de `list_available_tools`.
-       - Si los campos no son válidos, solicita corrección basada en `list_fields`.
-       - Si las fechas o rangos son inválidos, solicita formato correcto (YYYY-MM-DD para fechas, numéricos para rangos).
+    7. **Error handling**:
+       - If `tool_name` is invalid, prompt the user to use a name from `list_available_tools`.
+       - If fields are invalid, request correction based on `list_fields`.
+       - If dates or ranges are invalid, request the correct format (YYYY-MM-DD for dates, numeric for ranges).
     """
     try:
         if tool_name not in config.get("tools", {}):
@@ -430,9 +430,9 @@ def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[s
             if fields_info["status"] != "success":
                 return json.dumps({
                     "status": "error",
-                    "message": "No se pudieron obtener campos válidos",
+                    "message": "Could not retrieve valid fields",
                     "results": [],
-                    "analysis_notes": ["No se pudieron obtener campos válidos"]
+                    "analysis_notes": ["Could not retrieve valid fields"]
                 }, ensure_ascii=False)
             normalized_key_figures = fields_info["key_figures"]
             logger.info(f"No key_figures provided, using all numeric fields for {tool_name}: {normalized_key_figures}")
@@ -489,7 +489,7 @@ def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[s
         results = []
         for record in fetch_result["data"]:
             analysis = {
-                "date": record.get("date", "Desconocida"),
+                "date": record.get("date", "Unknown"),
                 **{k: record.get(k) for k in key_values},
                 "metrics": {k: record[k] for k in normalized_key_figures if k in record and record[k] is not None}
             }
@@ -521,33 +521,33 @@ def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[s
 @mcp.tool()
 def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
     """
-    Recupera datos de un área específica aplicando filtros por campos categóricos, métricas numéricas y fechas.
+    Retrieves data from a specific area, applying filters by categorical fields, numeric metrics, and dates.
 
-    INSTRUCCIONES PARA EL LLM:
-    1. **Seleccionar el tool_name**: Usa `list_available_tools` para obtener las áreas disponibles y elige el `tool_name` adecuado.
-    2. **Obtener campos válidos**: Llama a `list_fields` con el `tool_name` para obtener los campos `key_figures` y `key_values` específicos.
-    3. **Validar campos**: Usa solo campos de `list_fields` para el `tool_name` seleccionado.
-    4. **Estructura de la consulta**: Sigue esta estructura:
+    INSTRUCTIONS FOR THE LLM:
+    1. **Select the tool_name**: Use `list_available_tools` to obtain the available areas and choose the appropriate `tool_name`.
+    2. **Obtain valid fields**: Call `list_fields` with the `tool_name` to retrieve the `key_figures` and `key_values` fields specific to that area.
+    3. **Validate fields**: Use only fields from `list_fields` for the selected `tool_name`.
+    4. **Query structure**: Follow this structure:
        ```json
        {
-           "tool_name": "<nombre_del_area>",
+           "tool_name": "<area_name>",
            "key_values": {
-               "<campo_categórico_1>": "<valor>",
-               "<campo_categórico_2>": "<valor>"
+               "<categorical_field_1>": "<value>",
+               "<categorical_field_2>": "<value>"
            },
            "key_figures": [
-               {"field": "<campo_numérico_1>", "min": <número>, "max": <número>},
-               {"field": "<campo_numérico_2>", "min": <número>, "max": <número>}
+               {"field": "<numeric_field_1>", "min": <number>, "max": <number>},
+               {"field": "<numeric_field_2>", "min": <number>, "max": <number>}
            ],
-           // Usa EITHER specific_dates OR start_date/end_date, no ambos
-           "specific_dates": ["YYYY-MM-DD", ...], // Para fechas específicas
-           // O
-           "start_date": "YYYY-MM-DD", // Para un rango de fechas
+           // Use EITHER specific_dates OR start_date/end_date, not both
+           "specific_dates": ["YYYY-MM-DD", ...], // For specific dates
+           // OR
+           "start_date": "YYYY-MM-DD", // For a date range
            "end_date": "YYYY-MM-DD"
        }
        ```
-    5. **Ejemplos**:
-       - Para `manufacturing`:
+    5. **Examples**:
+       - For `manufacturing`:
          ```json
          {
              "tool_name": "manufacturing",
@@ -557,7 +557,7 @@ def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str
              "end_date": "2025-07-20"
          }
          ```
-       - Para `human_resources`:
+       - For `human_resources`:
          ```json
          {
              "tool_name": "human_resources",
@@ -565,7 +565,7 @@ def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str
              "specific_dates": ["2025-07-18"]
          }
          ```
-    6. **Manejo de errores**: Si los campos o fechas son inválidos, solicita corrección basada en `list_fields`.
+    6. **Error handling**: If fields or dates are invalid, request correction based on `list_fields`.
     """
     try:
         if tool_name not in config.get("tools", {}):
@@ -587,12 +587,12 @@ def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
     """
-    Lista las áreas (tools) disponibles en el MCP.
+    Lists the available areas (tools) in the MCP.
 
-    INSTRUCCIONES PARA EL LLM:
-    1. **Uso**: Llama a esta función para obtener la lista de áreas disponibles (e.g., "manufacturing", "human_resources").
-    2. **Resultado**: Devuelve un JSON con los nombres de las áreas, que deben usarse como `tool_name` en otras funciones.
-    3. **Ejemplo de consulta**:
+    INSTRUCTIONS FOR THE LLM:
+    1. **Usage**: Call this function to retrieve the list of available areas (e.g., "manufacturing", "human_resources").
+    2. **Result**: Returns a JSON with the names of the areas, which must be used as `tool_name` in other functions.
+    3. **Query example**:
        ```json
        {}
        ```
@@ -619,15 +619,15 @@ def list_available_tools(ctx: Context) -> str:
                             for param_name, param in signature.parameters.items()
                             if param_name != 'ctx'
                         ]
-                        # Asociar áreas desde config["tools"]
+                        # Associate areas from config["tools"]
                         areas = list(config.get("tools", {}).keys())
                         tools.append({
                             "name": tool_name,
                             "parameters": parameters,
-                            "areas": areas  # Agregar lista de áreas disponibles
+                            "areas": areas  # Add list of available areas
                         })
         except Exception as e:
-            logger.warning(f"Fallo al acceder al registro interno de FastMCP: {str(e)}")
+            logger.warning(f"Failed to access FastMCP internal registry: {str(e)}")
         if not tools:
             module = inspect.getmodule(inspect.currentframe())
             for name, obj in inspect.getmembers(module):
@@ -652,12 +652,12 @@ def list_available_tools(ctx: Context) -> str:
                                 "areas": areas
                             })
                     except Exception as e:
-                        logger.debug(f"No se pudo inspeccionar la función {name}: {str(e)}")
+                        logger.debug(f"Could not inspect function {name}: {str(e)}")
         return json.dumps({
             "status": "success" if tools else "no_data",
             "count": len(tools),
             "tools": tools,
-            "message": "Lista de herramientas recuperada exitosamente." if tools else "No se encontraron herramientas disponibles."
+            "message": "Tool list retrieved successfully." if tools else "No tools available."
         }, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Failed to list available tools: {str(e)}")
