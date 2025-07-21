@@ -387,7 +387,7 @@ def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[s
          ```json
          {
              "tool_name": "manufacturing",
-             "key_values": {"machine": "ModelA"},
+             "key_values": {"machine": "ModelA","production_line": "Line3},
              "key_figures": [{"field": "temperature", "min": 70, "max": 80}],
              "start_date": "2025-07-18",
              "end_date": "2025-07-20"
@@ -397,7 +397,7 @@ def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[s
          ```json
          {
              "tool_name": "human_resources",
-             "key_values": {"employee_id": "001"},
+             "key_values": {"employee_id": "001","production_line": "Line3"},
              "key_figures": [{"field": "hours_worked", "min": 8}],
              "specific_dates": ["2025-07-18"]
          }
@@ -619,9 +619,12 @@ def list_available_tools(ctx: Context) -> str:
                             for param_name, param in signature.parameters.items()
                             if param_name != 'ctx'
                         ]
+                        # Asociar áreas desde config["tools"]
+                        areas = list(config.get("tools", {}).keys())
                         tools.append({
                             "name": tool_name,
-                            "parameters": parameters
+                            "parameters": parameters,
+                            "areas": areas  # Agregar lista de áreas disponibles
                         })
         except Exception as e:
             logger.warning(f"Fallo al acceder al registro interno de FastMCP: {str(e)}")
@@ -642,9 +645,11 @@ def list_available_tools(ctx: Context) -> str:
                                 for param_name, param in signature.parameters.items()
                                 if param_name != 'ctx'
                             ]
+                            areas = list(config.get("tools", {}).keys())
                             tools.append({
                                 "name": name,
-                                "parameters": parameters
+                                "parameters": parameters,
+                                "areas": areas
                             })
                     except Exception as e:
                         logger.debug(f"No se pudo inspeccionar la función {name}: {str(e)}")
