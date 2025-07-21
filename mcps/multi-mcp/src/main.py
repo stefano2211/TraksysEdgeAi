@@ -619,15 +619,15 @@ def list_available_tools(ctx: Context) -> str:
                             for param_name, param in signature.parameters.items()
                             if param_name != 'ctx'
                         ]
-                        # Associate areas from config["tools"]
+                        # Asociar áreas desde config["tools"]
                         areas = list(config.get("tools", {}).keys())
                         tools.append({
                             "name": tool_name,
                             "parameters": parameters,
-                            "areas": areas  # Add list of available areas
+                            "Tools available": areas  # Agregar lista de áreas disponibles
                         })
         except Exception as e:
-            logger.warning(f"Failed to access FastMCP internal registry: {str(e)}")
+            logger.warning(f"Fallo al acceder al registro interno de FastMCP: {str(e)}")
         if not tools:
             module = inspect.getmodule(inspect.currentframe())
             for name, obj in inspect.getmembers(module):
@@ -649,15 +649,15 @@ def list_available_tools(ctx: Context) -> str:
                             tools.append({
                                 "name": name,
                                 "parameters": parameters,
-                                "areas": areas
+                                "Tools available": areas
                             })
                     except Exception as e:
-                        logger.debug(f"Could not inspect function {name}: {str(e)}")
+                        logger.debug(f"No se pudo inspeccionar la función {name}: {str(e)}")
         return json.dumps({
             "status": "success" if tools else "no_data",
             "count": len(tools),
             "tools": tools,
-            "message": "Tool list retrieved successfully." if tools else "No tools available."
+            "message": "Lista de herramientas recuperada exitosamente." if tools else "No se encontraron herramientas disponibles."
         }, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Failed to list available tools: {str(e)}")
