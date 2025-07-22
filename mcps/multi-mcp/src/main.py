@@ -282,9 +282,7 @@ def list_fields(ctx: Context, tool_name: str) -> str:
     """
     Lists the available fields in the dataset of a specific area.
 
-    INSTRUCTIONS FOR THE LLM:
-    1. **Select the tool_name**: Use `list_available_tools` to obtain the available areas and choose the appropriate `tool_name` (e.g., "manufacturing", "human_resources").
-    2. **Usage**: Call this function with the `tool_name` to retrieve the `key_figures` (numeric) and `key_values` (categorical) fields specific to that area.
+    1. **Usage**: Call this function with the `tool_name` to retrieve the `key_figures` (numeric) and `key_values` (categorical) fields specific to that area.
     3. **Query example**:
        ```json
        {
@@ -353,11 +351,17 @@ def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[s
     """
     Analyzes data compliance for a specific area against SOP rules.
 
-    INSTRUCTIONS FOR THE LLM:
-    1. **Select the tool_name**: Use `list_available_tools` to obtain the available areas and choose the appropriate `tool_name` (e.g., "manufacturing", "human_resources").
-    2. **Obtain valid fields**: Call `list_fields` with the `tool_name` to retrieve the `key_figures` and `key_values` fields specific to that area.
-    3. **Validate fields**: Use only fields present in the response from `list_fields` for the selected `tool_name`.
-    4. **Query structure**: Follow this structure:
+    Use this tool to check compliance of a specific area against SOPs.
+
+    1. **Obtain valid fields**: Call `list_fields` with the `tool_name` to retrieve the `key_figures` and `key_values` fields specific to that area.
+    2. **Validate fields**: Use only fields present in the response from `list_fields` for the selected `tool_name`.
+    3. **Query structure**: Follow this structure:
+    2. Provide:
+    - tool_name (e.g. "manufacturing")
+    - key_values: filters like machine or employee
+    - key_figures: metric checks with optional min/max
+    - Either specific_dates or a start_date + end_date range
+    3. Do not mix specific_dates and date ranges.
        ```json
        {
            "tool_name": "<area_name>",
@@ -376,13 +380,7 @@ def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[s
            "end_date": "YYYY-MM-DD"
        }
        ```
-       Note: `min` and `max` are optional. If not specified, all values are included.
-    5. **When to use specific_dates vs. start_date/end_date**:
-       - Use `specific_dates` for specific days (e.g., "only July 18, 2025"). Example: `specific_dates: ["2025-07-18"]`.
-       - Use `start_date` and `end_date` for ranges (e.g., "from July 18 to 20, 2025"). Example: `start_date: "2025-07-18", end_date: "2025-07-20"`.
-       - Do not combine both.
-       - Omit dates if not specified.
-    6. **Examples by area**:
+       Examples of valid calls:
        - For `manufacturing`:
          ```json
          {
@@ -402,10 +400,6 @@ def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[s
              "specific_dates": ["2025-07-18"]
          }
          ```
-    7. **Error handling**:
-       - If `tool_name` is invalid, prompt the user to use a name from `list_available_tools`.
-       - If fields are invalid, request correction based on `list_fields`.
-       - If dates or ranges are invalid, request the correct format (YYYY-MM-DD for dates, numeric for ranges).
     """
     try:
         if tool_name not in config.get("tools", {}):
