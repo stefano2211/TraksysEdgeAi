@@ -20,7 +20,7 @@ El proyecto está compuesto por varios microservicios:
 - **NGINX**: actúa como proxy inverso, maneja CORS, SSL y enruta el tráfico a los servicios internos.
 - **MinIO** y **Qdrant** (no incluidos aquí): almacenamiento de archivos y vectorial, respectivamente.
 
-## Estructura de Carpetas y Archivos (adaptada a este proyecto)
+## Estructura de Carpetas y Archivos (actual)
 
 - `docker-compose.yaml`: Orquesta todos los servicios (API, token, MCPs, NGINX, etc.).
 - `Dockerfile.nginx`: Dockerfile para construir la imagen personalizada de NGINX.
@@ -28,59 +28,56 @@ El proyecto está compuesto por varios microservicios:
 - `nginx.conf` y `nginx.conf.template`: Configuración y plantilla de NGINX.
 - `certs/`: Certificados SSL para NGINX (`server.crt`, `server.key`).
 - `common/`: Código Python compartido entre microservicios.
-  - `auth_utils.py`: Utilidades de autenticación y validación de tokens.
-  - `encryption_utils.py`: Funciones de cifrado y descifrado.
-  - `minio_utils.py`: Funciones para interactuar con MinIO.
-  - `qdrant_utils.py`: Funciones para interactuar con Qdrant.
-  - `requirements.txt`: Dependencias comunes de Python.
+  - `auth_utils.py`, `encryption_utils.py`, `minio_utils.py`, `qdrant_utils.py`: utilidades comunes.
+  - `requirements.txt`: dependencias comunes.
 - `api/`: Servicio API principal.
-  - `app.py`: Código principal de la API.
-  - `Dockerfile.api`: Dockerfile para la API.
-  - `requirements.txt`: Dependencias de la API.
+  - `app.py`, `Dockerfile.api`, `requirements.txt`.
 - `token_api/`: Servicio de autenticación y emisión de tokens.
-  - `token_api.py`: Código principal del servicio de tokens.
-  - `Dockerfile.token`: Dockerfile para el servicio de tokens.
-  - `requirements.txt`: Dependencias del servicio de tokens.
-- `mcps/`: Microservicios MCP para distintos dominios.
-  - `human-resources/`: Microservicio de Recursos Humanos.
-    - `config.yaml`: Configuración específica.
-    - `requirements.txt`: Dependencias.
-    - `src/`: Código fuente.
-      - `main.py`: Lógica principal.
-      - `utils.py`: Utilidades del dominio.
-  - `manufacturing/`: Microservicio de Manufactura.
-    - `config.yaml`: Configuración específica.
-    - `requirements.txt`: Dependencias.
-    - `src/`: Código fuente.
-      - `main.py`: Lógica principal.
-      - `utils.py`: Utilidades del dominio.
+  - `token_api.py`, `Dockerfile.token`, `requirements.txt`.
+- `mcps/`: Microservicios MCP.
+  - `multi-mcp/`: Microservicio MCP (cumplimiento y análisis).
+    - `config.yaml`, `requirements.txt`, `src/` (`main.py`, `utils.py`).
 
-## Cómo Ejecutar el Proyecto
+## Instalación y Ejecución
 
 1. **Clona el repositorio y navega a la carpeta raíz.**
-2. **Configura el archivo `.env`** con las variables necesarias (ver sección siguiente).
-3. **Genera la configuración de NGINX:**
+2. **Instala dependencias Python (opcional, para desarrollo local):**
+   ```bash
+   pip install -r common/requirements.txt
+   pip install -r api/requirements.txt
+   pip install -r token_api/requirements.txt
+   pip install -r mcps/multi-mcp/requirements.txt
+   ```
+3. **Configura el archivo `.env`** con las variables necesarias (ver sección siguiente).
+4. **Genera la configuración de NGINX:**
    ```bash
    ./generate_nginx_conf.sh
    ```
-4. **Levanta los servicios con Docker Compose:**
+5. **Levanta los servicios con Docker Compose:**
    ```bash
    docker-compose up --build
    ```
-5. **Accede a la aplicación web o APIs** a través de `https://localhost` (o el dominio configurado).
+6. **Accede a la aplicación web o APIs** a través de `https://localhost` (o el dominio configurado).
 
 ## Variables de Entorno
-Algunas variables importantes (definidas en `.env`):
-- `CORS_ORIGINS`: Orígenes permitidos para CORS (ej: `http://localhost:8080`).
-- `ENCRYPTION_KEY`: Clave para cifrado de datos sensibles.
-- `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_SECURE`: Configuración de MinIO.
-- `QDRANT_HOST`, `QDRANT_PORT`: Configuración de Qdrant.
-- `API_URL`, `TOKEN_API_URL`: URLs internas para comunicación entre servicios.
+Ejemplo de archivo `.env`:
+```env
+CORS_ORIGINS=http://localhost:8080
+ENCRYPTION_KEY=tu_clave_secreta
+MINIO_ENDPOINT=minio:9000
+MINIO_ACCESS_KEY=usuario_minio
+MINIO_SECRET_KEY=clave_minio
+MINIO_SECURE=False
+QDRANT_HOST=qdrant
+QDRANT_PORT=6333
+API_URL=http://api:8000
+TOKEN_API_URL=http://token_api:8001
+```
 
 ## Servicios Principales
 - **API**: expone endpoints REST para consulta y procesamiento de datos.
 - **Token API**: gestiona autenticación y autorización vía JWT u otros mecanismos.
-- **MCPs**: exponen herramientas para análisis de cumplimiento, extracción de datos, validación, etc. Cada dominio (RRHH, manufactura) tiene su lógica y configuración.
+- **MCPs**: exponen herramientas para análisis de cumplimiento, extracción de datos, validación, etc. Actualmente el microservicio MCP está en `mcps/multi-mcp/`.
 - **NGINX**: proxy inverso, maneja SSL, CORS, logging y enruta tráfico a los servicios internos.
 
 ## Notas de Seguridad
@@ -90,5 +87,6 @@ Algunas variables importantes (definidas en `.env`):
 
 ---
 
-## Créditos
-Desarrollado por stefa2980 y colaboradores. Para dudas o mejoras, abre un issue o pull request.
+## Contacto y Soporte
+Desarrollado por stefa2980 y colaboradores.
+Para dudas, soporte o sugerencias, abre un issue en GitHub o contacta a stefa2980.

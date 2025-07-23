@@ -516,11 +516,13 @@ def analyze_compliance(ctx: Context, tool_name: str, key_values: Optional[Dict[s
 def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, str]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
     """
     Retrieves data from a specific area, applying filters by categorical fields, numeric metrics, and dates.
+    
+    This tool returns unprocessed data from the selected area (e.g., manufacturing or HR), allowing
+    you to filter it by categorical fields, numeric metrics, and time ranges.
 
     INSTRUCTIONS FOR THE LLM:
-    1. **Select the tool_name**: Use `list_available_tools` to obtain the available areas and choose the appropriate `tool_name`.
-    2. **Obtain valid fields**: Call `list_fields` with the `tool_name` to retrieve the `key_figures` and `key_values` fields specific to that area.
-    3. **Validate fields**: Use only fields from `list_fields` for the selected `tool_name`.
+    1. **Obtain valid fields**: Call `list_fields` with the `tool_name` to retrieve the `key_figures` and `key_values` fields specific to that area.
+    2. **Validate fields**: Use only fields from `list_fields` for the selected `tool_name`.
     4. **Query structure**: Follow this structure:
        ```json
        {
