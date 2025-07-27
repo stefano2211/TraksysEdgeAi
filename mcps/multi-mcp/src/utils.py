@@ -139,9 +139,19 @@ class DataValidator:
         invalid_figures = [f for f in normalized_key_figures if f not in fields_info["key_figures"]]
         if invalid_figures:
             errors.append(f"Invalid numeric fields: {invalid_figures}")
+        # Validar key_values, manejando listas de valores
         for k, v in key_values.items():
-            if k not in fields_info["key_values"] or v not in fields_info["key_values"].get(k, []):
+            if k not in fields_info["key_values"]:
                 errors.append(f"Invalid categorical field/value: {k}={v}")
+            else:
+                valid_values = fields_info["key_values"].get(k, [])
+                if isinstance(v, list):
+                    invalid_values = [val for val in v if val not in valid_values]
+                    if invalid_values:
+                        errors.append(f"Invalid categorical field/value: {k}={invalid_values}")
+                else:
+                    if v not in valid_values:
+                        errors.append(f"Invalid categorical field/value: {k}={v}")
         if errors:
             raise ValueError(" | ".join(errors))
         return fields_info
