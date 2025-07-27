@@ -307,6 +307,20 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
 
 @mcp.tool()
 def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) -> str:
+    """
+    Obtiene el contenido de un archivo PDF asociado a un registro específico, usando MinIO y cacheando el resultado en Qdrant.
+
+    Parámetros:
+        ctx (Context): Contexto de ejecución (proporcionado automáticamente por FastMCP).
+        tool_name (str): Nombre de la herramienta/área (debe estar configurada en el archivo de configuración).
+        key_values (Dict[str, str]): Diccionario con exactamente un par clave-valor que identifica el PDF a recuperar (ejemplo: {"machine": "ModelA"}).
+
+    Retorna:
+        str: JSON con el estado, nombre de archivo y contenido del PDF.
+
+    Ejemplo de uso:
+        get_pdf_content(ctx, "manufacturing", {"machine": "ModelA"})
+    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -362,6 +376,19 @@ def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) ->
 
 @mcp.tool()
 def list_fields(ctx: Context, tool_name: str) -> str:
+    """
+    Lista los campos disponibles en los datos de la herramienta, diferenciando entre métricas numéricas (key_figures) y valores categóricos (key_values).
+
+    Parámetros:
+        ctx (Context): Contexto de ejecución.
+        tool_name (str): Nombre de la herramienta/área.
+
+    Retorna:
+        str: JSON con los campos identificados (key_figures y key_values).
+
+    Ejemplo de uso:
+        list_fields(ctx, "manufacturing")
+    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -414,6 +441,20 @@ def list_fields(ctx: Context, tool_name: str) -> str:
 
 @mcp.tool()
 def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
+    """
+    Analiza el cumplimiento de métricas para una herramienta/área específica, interpretando un prompt en lenguaje natural y devolviendo resultados estructurados.
+
+    Parámetros:
+        ctx (Context): Contexto de ejecución.
+        tool_name (str): Nombre de la herramienta/área.
+        user_prompt (str): Prompt en lenguaje natural que describe el análisis deseado (ejemplo: "compliance para ModelA del 2025-04-10 al 2025-04-11, temperatura < 80").
+
+    Retorna:
+        str: JSON con el análisis, resultados y notas.
+
+    Ejemplo de uso:
+        analyze_compliance(ctx, "manufacturing", "compliance para ModelA del 2025-04-10 al 2025-04-11, temperatura < 80")
+    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -556,6 +597,24 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
 
 @mcp.tool()
 def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List[str]]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
+    """
+    Recupera un dataset filtrado según los parámetros proporcionados.
+
+    Parámetros:
+        ctx (Context): Contexto de ejecución.
+        tool_name (str): Nombre de la herramienta/área.
+        key_values (Optional[Dict[str, List[str]]]): Filtros categóricos (opcional).
+        key_figures (Optional[List[Dict]]): Filtros numéricos (opcional).
+        start_date (Optional[str]): Fecha de inicio (opcional).
+        end_date (Optional[str]): Fecha de fin (opcional).
+        specific_dates (Optional[List[str]]): Fechas específicas (opcional).
+
+    Retorna:
+        str: JSON con el dataset filtrado como lista de registros.
+
+    Ejemplo de uso:
+        get_dataset(ctx, "manufacturing", {"machine": ["ModelA"]}, [{"field": "temperature", "min": 70}], "2025-04-10", "2025-04-11")
+    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -575,6 +634,18 @@ def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, Lis
 
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
+    """
+    Lista todas las herramientas disponibles y sus parámetros.
+
+    Parámetros:
+        ctx (Context): Contexto de ejecución.
+
+    Retorna:
+        str: JSON con la lista de herramientas, sus parámetros y áreas disponibles.
+
+    Ejemplo de uso:
+        list_available_tools(ctx)
+    """
     try:
         tools = []
         try:
