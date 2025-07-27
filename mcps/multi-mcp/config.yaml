@@ -22,3 +22,27 @@ tools:
       collections: ["sop_cache"]
       sop_cache_ttl: 36000
     api_endpoint: /employees/
+prompts:
+  system_prompt: |
+    You are an expert prompt parser that responds ONLY with valid JSON. Do not include explanations, markdown, or any extra text. Output must be a single JSON object parseable by json.loads(). Start with { and end with }.
+  parse_prompts:
+    manufacturing:
+      prompt: |
+        Parse the user prompt: {user_prompt}. Extract:
+        - model_filters: dict {{field: [values]}} using field '{default_model_field}'. Only include explicitly mentioned models (e.g., ModelA).
+        - timestamp_filters: dict {{field: {{'from': date, 'to': date}}}} using field '{default_timestamp_field}', standardizing dates to YYYY-MM-DD.
+        - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}}.
+        Example: 'compliance for ModelA from 2025-04-10 to 2025-04-11, temperature < 80' outputs {{"model_filters": {{"{default_model_field}": ["ModelA"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"from": "2025-04-10", "to": "2025-04-11"}}}}, "metric_filters": [{{"field": "temperature", "op": "<", "value": 80, "logical": "AND"}}]}}.
+      defaults:
+        model_field: machine
+        timestamp_field: date
+    human_resources:
+      prompt: |
+        Parse the user prompt: {user_prompt}. Extract:
+        - model_filters: dict {{field: [values]}} using field '{default_model_field}'. Only include explicitly mentioned IDs (e.g., 001).
+        - timestamp_filters: dict {{field: {{'from': date, 'to': date}}}} using field '{default_timestamp_field}', standardizing dates to YYYY-MM-DD.
+        - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}}.
+        Example: 'compliance for employee 001 from 2025-04-10 to 2025-04-11, hours_worked > 8' outputs {{"model_filters": {{"{default_model_field}": ["001"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"from": "2025-04-10", "to": "2025-04-11"}}}}, "metric_filters": [{{"field": "hours_worked", "op": ">", "value": 8, "logical": "AND"}}]}}.
+      defaults:
+        model_field: employee_id
+        timestamp_field: date

@@ -31,33 +31,30 @@ logger.info(f"API URL: {config['api']['url']}, TOKEN API URL: {config['api']['to
 # Initialize Ollama client
 ollama_client = Client(host='http://ollama:11434')
 
-# Prompts definidos directamente en el código
-SYSTEM_PROMPT = "You are an expert prompt parser that responds ONLY with valid JSON. Do not include explanations, markdown, or any extra text. Output must be a single JSON object parseable by json.loads(). Start with { and end with }."
-
-PARSE_PROMPTS = {
-    "manufacturing": {
-        "prompt": """Parse the user prompt: {user_prompt}. Extract:
-- model_filters: dict {{field: [values]}} using field 'machine'. Only include explicitly mentioned models (e.g., ModelA).
-- timestamp_filters: dict {{field: {{'from': date, 'to': date}}}} using field 'date', standardizing dates to YYYY-MM-DD.
-- metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}}.
-Example: 'compliance for ModelA from 2025-04-10 to 2025-04-11, temperature < 80' outputs {{"model_filters": {{"machine": ["ModelA"]}}, "timestamp_filters": {{"date": {{"from": "2025-04-10", "to": "2025-04-11"}}}}, "metric_filters": [{{"field": "temperature", "op": "<", "value": 80, "logical": "AND"}}]}}.""",
-        "defaults": {
-            "model_field": "machine",
-            "timestamp_field": "date"
-        }
-    },
-    "human_resources": {
-        "prompt": """Parse the user prompt: {user_prompt}. Extract:
-- model_filters: dict {{field: [values]}} using field 'employee_id'. Only include explicitly mentioned IDs (e.g., 001).
-- timestamp_filters: dict {{field: {{'from': date, 'to': date}}}} using field 'date', standardizing dates to YYYY-MM-DD.
-- metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}}.
-Example: 'compliance for employee 001 from 2025-04-10 to 2025-04-11, hours_worked > 8' outputs {{"model_filters": {{"employee_id": ["001"]}}, "timestamp_filters": {{"date": {{"from": "2025-04-10", "to": "2025-04-11"}}}}, "metric_filters": [{{"field": "hours_worked", "op": ">", "value": 8, "logical": "AND"}}]}}.""",
-        "defaults": {
-            "model_field": "employee_id",
-            "timestamp_field": "date"
-        }
-    }
-}
+# Load prompts from config.yaml with validation
+try:
+    SYSTEM_PROMPT = config.get("prompts", {}).get("system_prompt", "")
+    PARSE_PROMPTS = config.get("prompts", {}).get("parse_prompts", {})
+    if not SYSTEM_PROMPT:
+        logger.error("No system_prompt defined in config.yaml")
+        raise ValueError("system_prompt is required in config.yaml")
+    if not PARSE_PROMPTS:
+        logger.error("No parse_prompts defined in config.yaml")
+        raise ValueError("parse_prompts is required in config.yaml")
+    for tool, tool_config in PARSE_PROMPTS.items():
+        if not isinstance(tool_config, dict) or "prompt" not in tool_config:
+            logger.error(f"Invalid parse_prompts configuration for tool {tool}: missing 'prompt'")
+            raise ValueError(f"Invalid parse_prompts configuration for tool {tool}")
+        if "{user_prompt}" not in tool_config["prompt"]:
+            logger.error(f"Invalid prompt for tool {tool}: missing {user_prompt} placeholder")
+            raise ValueError(f"Invalid prompt for tool {tool}")
+        if "defaults" not in tool_config or not isinstance(tool_config["defaults"], dict):
+            logger.warning(f"No defaults defined for tool {tool}, using empty defaults")
+            tool_config["defaults"] = {}
+        logger.debug(f"Loaded prompt for {tool}: {tool_config['prompt'][:100]}...")
+except Exception as e:
+    logger.error(f"Failed to validate prompts configuration: {str(e)}")
+    raise
 
 mcp = FastMCP("Multi-Area Compliance Processor")
 tool_name = mcp.name.lower().replace(" ", "-")
@@ -108,6 +105,7 @@ def get_tool_client(tool_name: str):
     return minio_client, qdrant_manager
 
 def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
+    logger.debug(f"Calling LLM with system prompt: {system[:100]}... and user prompt: {prompt[:100]}...")
     try:
         response = ollama_client.chat(
             model=model,
@@ -116,6 +114,7 @@ def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
                 {"role": "user", "content": prompt}
             ]
         )
+        logger.debug(f"LLM response: {response['message']['content'][:100]}...")
         return response['message']['content']
     except ResponseError as e:
         logger.error(f"Ollama request failed: {str(e)}")
@@ -123,34 +122,49 @@ def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
 
 def parse_prompt(tool: str, user_prompt: str) -> Dict:
     if tool not in PARSE_PROMPTS:
+        logger.error(f"Tool {tool} not supported in parse_prompts")
         raise ValueError(f"Tool {tool} not supported for prompt parsing")
     
     tool_config = PARSE_PROMPTS[tool]
-    parse_prompt_template = tool_config["prompt"]
-    defaults = tool_config["defaults"]
-    parse_prompt = parse_prompt_template.format(
-        user_prompt=user_prompt,
-        default_model_field=defaults["model_field"],
-        default_timestamp_field=defaults["timestamp_field"]
-    )
+    parse_prompt_template = tool_config.get("prompt", "")
+    defaults = tool_config.get("defaults", {})
+    
+    if not parse_prompt_template:
+        logger.error(f"No prompt defined for tool {tool}")
+        raise ValueError(f"No prompt defined for tool {tool}")
+    
+    try:
+        parse_prompt = parse_prompt_template.format(
+            user_prompt=user_prompt,
+            default_model_field=defaults.get("model_field", "unknown"),
+            default_timestamp_field=defaults.get("timestamp_field", "date")
+        )
+    except KeyError as e:
+        logger.error(f"Invalid prompt template for {tool}: missing placeholder {str(e)}")
+        raise ValueError(f"Invalid prompt template for {tool}: {str(e)}")
+    
+    logger.debug(f"Formatted prompt for {tool}: {parse_prompt[:100]}...")
     response = call_llm(parse_prompt, system=SYSTEM_PROMPT)
-    logger.debug(f"LLM parse response for {tool}: {response}")
+    logger.debug(f"LLM parse response for {tool}: {response[:100]}...")
+    
     try:
         parsed = json.loads(response)
         # Validar estructura básica del JSON
         if not isinstance(parsed, dict):
+            logger.error(f"LLM returned invalid JSON structure for {tool}: {response}")
             raise ValueError("LLM returned invalid JSON structure")
         if "metric_filters" in parsed:
             for filt in parsed["metric_filters"]:
                 if not isinstance(filt, dict) or "field" not in filt:
+                    logger.error(f"Invalid metric filter for {tool}: {filt}")
                     raise ValueError(f"Invalid metric filter: {filt}")
-        logger.debug(f"Parsed prompt result: {json.dumps(parsed, ensure_ascii=False)}")
+        logger.debug(f"Parsed prompt result for {tool}: {json.dumps(parsed, ensure_ascii=False)}")
         return parsed
     except json.JSONDecodeError as e:
-        logger.error(f"LLM did not return valid JSON: {response}, error: {str(e)}")
+        logger.error(f"LLM did not return valid JSON for {tool}: {response}, error: {str(e)}")
         raise ValueError("LLM did not return valid JSON")
     except ValueError as e:
-        logger.error(f"JSON validation failed: {str(e)}")
+        logger.error(f"JSON validation failed for {tool}: {str(e)}")
         raise
 
 def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List[str]]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
