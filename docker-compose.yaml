@@ -72,6 +72,7 @@ services:
       - API_URL=${API_URL}
       - TOKEN_API_URL=${TOKEN_API_URL}
       - MCP_PORT=8000
+      - DEBUG=${DEBUG}
     depends_on:
       - api
       - token-api

@@ -13,8 +13,9 @@ import os
 import inspect
 from ollama import Client, ResponseError
 
-# Forzar nivel de logging a DEBUG para depuración
-logging.basicConfig(level=logging.DEBUG)
+# Configurar logging basado en la variable de entorno DEBUG
+DEBUG = os.getenv("DEBUG").lower() == "true"
+logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Load configuration
@@ -26,7 +27,7 @@ except Exception as e:
     raise
 
 config = expand_env_vars(config)
-logger.info(f"API URL: {config['api']['url']}, TOKEN API URL: {config['api']['token_url']}")
+logger.info(f"Starting server with API URL: {config['api']['url']}")
 
 # Initialize Ollama client
 ollama_client = Client(host='http://ollama:11434')
@@ -34,7 +35,7 @@ ollama_client = Client(host='http://ollama:11434')
 # Load prompts from config.yaml with validation
 try:
     SYSTEM_PROMPT = config.get("prompts", {}).get("system_prompt", "")
-    PARSE_PROMPTS = config.get("prompts", {}).get("parse_prompts", {})
+    PARSE_PROMPTS = {tool: config["tools"][tool] for tool in config.get("tools", {})}
     if not SYSTEM_PROMPT:
         logger.error("No system_prompt defined in config.yaml")
         raise ValueError("system_prompt is required in config.yaml")
@@ -43,15 +44,13 @@ try:
         raise ValueError("parse_prompts is required in config.yaml")
     for tool, tool_config in PARSE_PROMPTS.items():
         if not isinstance(tool_config, dict) or "prompt" not in tool_config:
-            logger.error(f"Invalid parse_prompts configuration for tool {tool}: missing 'prompt'")
+            logger.error(f"Invalid parse_prompts configuration for tool {tool}")
             raise ValueError(f"Invalid parse_prompts configuration for tool {tool}")
         if "{user_prompt}" not in tool_config["prompt"]:
-            logger.error(f"Invalid prompt for tool {tool}: missing {user_prompt} placeholder")
-            raise ValueError(f"Invalid prompt for tool {tool}")
+            logger.error(f"Invalid prompt for tool {tool}")
+            raise ValueError(f"Invalid prompt for tool {tool}: missing {{user_prompt}} placeholder")
         if "defaults" not in tool_config or not isinstance(tool_config["defaults"], dict):
-            logger.warning(f"No defaults defined for tool {tool}, using empty defaults")
             tool_config["defaults"] = {}
-        logger.debug(f"Loaded prompt for {tool}: {tool_config['prompt'][:100]}...")
 except Exception as e:
     logger.error(f"Failed to validate prompts configuration: {str(e)}")
     raise
@@ -97,6 +96,7 @@ def initialize_buckets():
     for tool_name in config.get("tools", {}):
         minio_client = get_minio_client(tool_name)
         minio_client.ensure_bucket()
+        logger.info(f"Initialized bucket for {tool_name}")
 
 initialize_buckets()
 
@@ -105,7 +105,6 @@ def get_tool_client(tool_name: str):
     return minio_client, qdrant_manager
 
 def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
-    logger.debug(f"Calling LLM with system prompt: {system[:100]}... and user prompt: {prompt[:100]}...")
     try:
         response = ollama_client.chat(
             model=model,
@@ -114,7 +113,6 @@ def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
                 {"role": "user", "content": prompt}
             ]
         )
-        logger.debug(f"LLM response: {response['message']['content'][:100]}...")
         return response['message']['content']
     except ResponseError as e:
         logger.error(f"Ollama request failed: {str(e)}")
@@ -122,7 +120,7 @@ def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
 
 def parse_prompt(tool: str, user_prompt: str) -> Dict:
     if tool not in PARSE_PROMPTS:
-        logger.error(f"Tool {tool} not supported in parse_prompts")
+        logger.error(f"Tool {tool} not supported")
         raise ValueError(f"Tool {tool} not supported for prompt parsing")
     
     tool_config = PARSE_PROMPTS[tool]
@@ -143,25 +141,20 @@ def parse_prompt(tool: str, user_prompt: str) -> Dict:
         logger.error(f"Invalid prompt template for {tool}: missing placeholder {str(e)}")
         raise ValueError(f"Invalid prompt template for {tool}: {str(e)}")
     
-    logger.debug(f"Formatted prompt for {tool}: {parse_prompt[:100]}...")
     response = call_llm(parse_prompt, system=SYSTEM_PROMPT)
-    logger.debug(f"LLM parse response for {tool}: {response[:100]}...")
-    
     try:
         parsed = json.loads(response)
-        # Validar estructura básica del JSON
         if not isinstance(parsed, dict):
-            logger.error(f"LLM returned invalid JSON structure for {tool}: {response}")
+            logger.error(f"LLM returned invalid JSON structure for {tool}")
             raise ValueError("LLM returned invalid JSON structure")
         if "metric_filters" in parsed:
             for filt in parsed["metric_filters"]:
                 if not isinstance(filt, dict) or "field" not in filt:
                     logger.error(f"Invalid metric filter for {tool}: {filt}")
                     raise ValueError(f"Invalid metric filter: {filt}")
-        logger.debug(f"Parsed prompt result for {tool}: {json.dumps(parsed, ensure_ascii=False)}")
         return parsed
     except json.JSONDecodeError as e:
-        logger.error(f"LLM did not return valid JSON for {tool}: {response}, error: {str(e)}")
+        logger.error(f"LLM did not return valid JSON for {tool}: {str(e)}")
         raise ValueError("LLM did not return valid JSON")
     except ValueError as e:
         logger.error(f"JSON validation failed for {tool}: {str(e)}")
@@ -208,7 +201,6 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
         else:
             normalized_key_figures = normalized_key_figures or []
 
-        logger.info(f"Validating fields in fetch_data for tool_name: {tool_name}")
         fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates, tool_name=tool_name)
         
         if tool_config["type"] == "json":
@@ -240,7 +232,6 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                 response = auth_client.get(api_endpoint, params=params)
                 response.raise_for_status()
                 all_data = response.json()
-                logger.debug(f"API data for {tool_name}: {json.dumps(all_data, ensure_ascii=False)}")
             except Exception as e:
                 logger.error(f"API request failed for {tool_name}: {str(e)}")
                 return json.dumps({
@@ -251,13 +242,8 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                     "covered_dates": []
                 }, ensure_ascii=False)
 
-        # Log available categorical fields and values
-        available_values = {k: sorted({rec[k] for rec in all_data if k in rec}) for k, v in all_data[0].items() if isinstance(v, str)}
-        logger.debug(f"Available categorical fields and values: {available_values}")
-
         processed_data = []
         for record in all_data:
-            # Check if record matches any of the values in key_values
             if all(record.get(k) in v for k, v in key_values.items() if v):
                 date_field = DataValidator.identify_date_field([record])
                 record_date = DataValidator.detect_and_normalize_date(record, date_field)
@@ -280,7 +266,6 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                                 item[field] = None
                     processed_data.append(item)
 
-        logger.debug(f"Processed data for {tool_name}: {json.dumps(processed_data, ensure_ascii=False)}")
         if processed_data:
             processed_data = [
                 r for r in processed_data
@@ -321,20 +306,6 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
 
 @mcp.tool()
 def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) -> str:
-    """
-    Obtiene el contenido de un archivo PDF asociado a un registro específico, usando MinIO y cacheando el resultado en Qdrant.
-
-    Parámetros:
-        ctx (Context): Contexto de ejecución (proporcionado automáticamente por FastMCP).
-        tool_name (str): Nombre de la herramienta/área (debe estar configurada en el archivo de configuración).
-        key_values (Dict[str, str]): Diccionario con exactamente un par clave-valor que identifica el PDF a recuperar (ejemplo: {"machine": "ModelA"}).
-
-    Retorna:
-        str: JSON con el estado, nombre de archivo y contenido del PDF.
-
-    Ejemplo de uso:
-        get_pdf_content(ctx, "manufacturing", {"machine": "ModelA"})
-    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -349,30 +320,26 @@ def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) ->
             raise ValueError("get_pdf_content expects exactly one key-value pair")
         field, value = next(iter(key_values.items()))
         filename = f"{value}.pdf"
-        logger.info(f"Attempting to fetch PDF: {filename} for key_values {key_values} in {tool_name}")
         point_id = encryption_manager.generate_id(key_values)
         
-        if qdrant_manager:
-            cache_result = qdrant_manager.get_sop(key_values)
-            if cache_result["status"] == "success":
-                logger.info(f"Cache hit for SOP with key_values {key_values} in {tool_name}")
-                return json.dumps({
-                    "status": "success",
-                    "filename": filename,
-                    "content": cache_result["content"]
-                }, ensure_ascii=False)
+        cache_result = qdrant_manager.get_sop(key_values)
+        if cache_result["status"] == "success":
+            logger.info(f"Cache hit for SOP with key_values {key_values} in {tool_name}")
+            return json.dumps({
+                "status": "success",
+                "filename": filename,
+                "content": cache_result["content"]
+            }, ensure_ascii=False)
         
-        logger.info(f"Cache miss for {filename}, fetching from MinIO with full path: {minio_client.sop_prefix}{filename}")
         minio_result = json.loads(minio_client.get_pdf_content(filename))
         if minio_result["status"] != "success":
             return json.dumps(minio_result, ensure_ascii=False)
         
         content = minio_result["content"]
-        if qdrant_manager:
-            try:
-                qdrant_manager.upsert_sop(key_values, content, point_id)
-            except Exception as e:
-                logger.warning(f"Failed to cache SOP in Qdrant for {tool_name}: {str(e)}. Continuing with MinIO content.")
+        try:
+            qdrant_manager.upsert_sop(key_values, content, point_id)
+        except Exception as e:
+            logger.warning(f"Failed to cache SOP in Qdrant for {tool_name}: {str(e)}")
         
         return json.dumps({
             "status": "success",
@@ -390,19 +357,6 @@ def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) ->
 
 @mcp.tool()
 def list_fields(ctx: Context, tool_name: str) -> str:
-    """
-    Lista los campos disponibles en los datos de la herramienta, diferenciando entre métricas numéricas (key_figures) y valores categóricos (key_values).
-
-    Parámetros:
-        ctx (Context): Contexto de ejecución.
-        tool_name (str): Nombre de la herramienta/área.
-
-    Retorna:
-        str: JSON con los campos identificados (key_figures y key_values).
-
-    Ejemplo de uso:
-        list_fields(ctx, "manufacturing")
-    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -438,7 +392,6 @@ def list_fields(ctx: Context, tool_name: str) -> str:
         sample = all_data[0]
         key_figures = [k for k, v in sample.items() if isinstance(v, (int, float))]
         key_values = {k: sorted({rec[k] for rec in all_data if k in rec}) for k, v in sample.items() if isinstance(v, str)}
-        logger.debug(f"Fields for {tool_name}: key_figures={key_figures}, key_values={key_values}")
         return json.dumps({
             "status": "success",
             "key_figures": key_figures,
@@ -455,20 +408,6 @@ def list_fields(ctx: Context, tool_name: str) -> str:
 
 @mcp.tool()
 def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
-    """
-    Analiza el cumplimiento de métricas para una herramienta/área específica, interpretando un prompt en lenguaje natural y devolviendo resultados estructurados.
-
-    Parámetros:
-        ctx (Context): Contexto de ejecución.
-        tool_name (str): Nombre de la herramienta/área.
-        user_prompt (str): Prompt en lenguaje natural que describe el análisis deseado (ejemplo: "compliance para ModelA del 2025-04-10 al 2025-04-11, temperatura < 80").
-
-    Retorna:
-        str: JSON con el análisis, resultados y notas.
-
-    Ejemplo de uso:
-        analyze_compliance(ctx, "manufacturing", "compliance para ModelA del 2025-04-10 al 2025-04-11, temperatura < 80")
-    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -480,7 +419,6 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
         
         minio_client, qdrant_manager = get_tool_client(tool_name)
         parsed = parse_prompt(tool_name, user_prompt)
-        logger.debug(f"Parsed prompt result: {json.dumps(parsed, ensure_ascii=False)}")
         
         key_values = parsed.get("model_filters", {})
         key_figures = parsed.get("metric_filters", [])
@@ -508,10 +446,8 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
                     logger.warning(f"Invalid metric filter: {item}")
                     continue
         
-        # Obtener los campos de metric_filters para metrics_analyzed
         metrics_analyzed = [kf["field"] for kf in normalized_key_figures]
         
-        # Validar campos
         try:
             DataValidator.validate_fields(ctx, metrics_analyzed, key_values, start_date, end_date, specific_dates, tool_name=tool_name)
         except ValueError as e:
@@ -524,7 +460,6 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
             }, ensure_ascii=False)
         
         valid_values = json.loads(list_fields(ctx, tool_name))["key_values"]
-        logger.info(f"Analyzing data for {tool_name}: key_values={key_values}, key_figures={normalized_key_figures}, start_date={start_date}, end_date={end_date}, specific_dates={specific_dates}")
         identifier_field = None
         identifier_value = None
         if valid_values:
@@ -536,9 +471,7 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
             if not identifier_field:
                 identifier_field = next(iter(valid_values))
                 identifier_value = key_values.get(identifier_field, [None])[0]
-        logger.info(f"Selected identifier_field: {identifier_field}, identifier_value: {identifier_value}")
         
-        # Obtener datos de la API
         fetch_result = json.loads(fetch_data(ctx, tool_name, key_values, normalized_key_figures, start_date, end_date, specific_dates))
         analysis_notes = [fetch_result.get("message", "")] if fetch_result.get("message") else []
         if fetch_result["status"] == "no_data":
@@ -560,20 +493,16 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
                 "analysis_notes": analysis_notes
             }, ensure_ascii=False)
         
-        # Obtener contenido SOP
         sop_content = {}
         for field, values in key_values.items():
             for value in values:
                 pdf_result = json.loads(get_pdf_content(ctx, tool_name, {field: value}))
                 if pdf_result["status"] == "success":
                     sop_content[f"{field}={value}"] = pdf_result.get("content", "")
-                    logger.info(f"SOP content for {field}={value} in {tool_name}: {sop_content[f'{field}={value}'][:100]}...")
                 else:
                     sop_content[f"{field}={value}"] = ""
-                    analysis_notes.append(f"Failed to load SOP for {field}={value} in {tool_name}: {pdf_result['message']}")
-                    logger.warning(f"Failed to load SOP for {field}={value} in {tool_name}: {pdf_result['message']}")
+                    analysis_notes.append(f"Failed to load SOP for {field}={value}: {pdf_result['message']}")
 
-        # Construir results con datos estructurados
         results = []
         for record in fetch_result["data"]:
             result_entry = {
@@ -611,24 +540,6 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
 
 @mcp.tool()
 def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List[str]]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
-    """
-    Recupera un dataset filtrado según los parámetros proporcionados.
-
-    Parámetros:
-        ctx (Context): Contexto de ejecución.
-        tool_name (str): Nombre de la herramienta/área.
-        key_values (Optional[Dict[str, List[str]]]): Filtros categóricos (opcional).
-        key_figures (Optional[List[Dict]]): Filtros numéricos (opcional).
-        start_date (Optional[str]): Fecha de inicio (opcional).
-        end_date (Optional[str]): Fecha de fin (opcional).
-        specific_dates (Optional[List[str]]): Fechas específicas (opcional).
-
-    Retorna:
-        str: JSON con el dataset filtrado como lista de registros.
-
-    Ejemplo de uso:
-        get_dataset(ctx, "manufacturing", {"machine": ["ModelA"]}, [{"field": "temperature", "min": 70}], "2025-04-10", "2025-04-11")
-    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -639,7 +550,6 @@ def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, Lis
         
         fetch_result = json.loads(fetch_data(ctx, tool_name, key_values, key_figures, start_date, end_date, specific_dates))
         if fetch_result["status"] != "success":
-            logger.info(f"No data retrieved for {tool_name}: {fetch_result.get('message', 'No message')}")
             return json.dumps([], ensure_ascii=False)
         return json.dumps(fetch_result["data"], ensure_ascii=False)
     except Exception as e:
@@ -648,18 +558,6 @@ def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, Lis
 
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
-    """
-    Lista todas las herramientas disponibles y sus parámetros.
-
-    Parámetros:
-        ctx (Context): Contexto de ejecución.
-
-    Retorna:
-        str: JSON con la lista de herramientas, sus parámetros y áreas disponibles.
-
-    Ejemplo de uso:
-        list_available_tools(ctx)
-    """
     try:
         tools = []
         try:
@@ -689,7 +587,7 @@ def list_available_tools(ctx: Context) -> str:
                             "Tools available": areas
                         })
         except Exception as e:
-            logger.warning(f"Fallo al acceder al registro interno de FastMCP: {str(e)}")
+            logger.warning(f"Failed to access FastMCP tool registry: {str(e)}")
         if not tools:
             module = inspect.getmodule(inspect.currentframe())
             for name, obj in inspect.getmembers(module):
@@ -713,13 +611,13 @@ def list_available_tools(ctx: Context) -> str:
                                 "parameters": parameters,
                                 "Tools available": areas
                             })
-                    except Exception as e:
-                        logger.debug(f"No se pudo inspeccionar la función {name}: {str(e)}")
+                    except Exception:
+                        pass
         return json.dumps({
             "status": "success" if tools else "no_data",
             "count": len(tools),
             "tools": tools,
-            "message": "Lista de herramientas recuperada exitosamente." if tools else "No se encontraron herramientas disponibles."
+            "message": "Tool list retrieved successfully." if tools else "No tools available."
         }, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Failed to list available tools: {str(e)}")
