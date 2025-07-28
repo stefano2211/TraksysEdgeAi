@@ -14,10 +14,10 @@ tools:
     api_endpoint: /machines/
     prompt: |
       Parse the user prompt: {user_prompt}. Extract:
-      - model_filters: dict {{field: [values]}} using field '{default_model_field}'. Only include explicitly mentioned models (e.g., ModelA).
+      - model_filters: dict {{field: [values]}} for all explicitly mentioned categorical fields (e.g., machine=ModelA, material=Aluminum, production_line=Line3).
       - timestamp_filters: dict {{field: {{'from': date, 'to': date}}}} using field '{default_timestamp_field}', standardizing dates to YYYY-MM-DD.
-      - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}}.
-      Example: 'compliance for ModelA from 2025-04-10 to 2025-04-11, temperature < 80' outputs {{"model_filters": {{"{default_model_field}": ["ModelA"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"from": "2025-04-10", "to": "2025-04-11"}}}}, "metric_filters": [{{"field": "temperature", "op": "<", "value": 80, "logical": "AND"}}]}}.
+      - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}} for numeric metrics only (e.g., temperature).
+      Example: 'compliance for ModelA from 2025-04-09 to 2025-04-11, temperature < 80, material Aluminum' outputs {{"model_filters": {{"machine": ["ModelA"], "material": ["Aluminum"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"from": "2025-04-09", "to": "2025-04-11"}}}}, "metric_filters": [{{"field": "temperature", "op": "<", "value": 80, "logical": "AND"}}]}}.
     defaults:
       model_field: machine
       timestamp_field: date

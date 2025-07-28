@@ -14,7 +14,7 @@ import inspect
 from ollama import Client, ResponseError
 
 # Configurar logging basado en la variable de entorno DEBUG
-DEBUG = os.getenv("DEBUG").lower() == "true"
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ try:
             raise ValueError(f"Invalid parse_prompts configuration for tool {tool}")
         if "{user_prompt}" not in tool_config["prompt"]:
             logger.error(f"Invalid prompt for tool {tool}")
-            raise ValueError(f"Invalid prompt for tool {tool}: missing {{user_prompt}} placeholder")
+            raise ValueError(f"Invalid prompt for tool {tool}: missing {user_prompt} placeholder")
         if "defaults" not in tool_config or not isinstance(tool_config["defaults"], dict):
             tool_config["defaults"] = {}
 except Exception as e:
@@ -539,16 +539,56 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
         }, ensure_ascii=False)
 
 @mcp.tool()
-def get_dataset(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List[str]]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
+def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
                 "status": "error",
-                "message": f"{tool_name} not configured",
+                "message": f"Tool {tool_name} not configured",
                 "data": []
             }, ensure_ascii=False)
         
-        fetch_result = json.loads(fetch_data(ctx, tool_name, key_values, key_figures, start_date, end_date, specific_dates))
+        parsed = parse_prompt(tool_name, user_prompt)
+        
+        key_values = parsed.get("model_filters", {})
+        key_figures = parsed.get("metric_filters", [])
+        start_date = None
+        end_date = None
+        specific_dates = None
+        timestamp_filters = parsed.get("timestamp_filters", {})
+        if timestamp_filters:
+            for field, rg in timestamp_filters.items():
+                start_date = rg.get("from")
+                end_date = rg.get("to")
+                if not start_date and not end_date:
+                    specific_dates = [rg.get("specific_date")] if rg.get("specific_date") else None
+        
+        normalized_key_figures = []
+        if key_figures:
+            for item in key_figures:
+                if isinstance(item, dict) and "field" in item:
+                    normalized_key_figures.append({
+                        "field": item["field"],
+                        "min": item.get("value") if item.get("op") == ">" else None,
+                        "max": item.get("value") if item.get("op") == "<" else None
+                    })
+                else:
+                    logger.warning(f"Invalid metric filter: {item}")
+                    continue
+        
+        metrics_analyzed = [kf["field"] for kf in normalized_key_figures]
+        
+        try:
+            DataValidator.validate_fields(ctx, metrics_analyzed, key_values, start_date, end_date, specific_dates, tool_name=tool_name)
+        except ValueError as e:
+            logger.error(f"Field validation failed: {str(e)}")
+            return json.dumps({
+                "status": "error",
+                "message": f"Field validation failed: {str(e)}",
+                "data": []
+            }, ensure_ascii=False)
+        
+        fetch_result = json.loads(fetch_data(ctx, tool_name, key_values, normalized_key_figures, start_date, end_date, specific_dates))
         if fetch_result["status"] != "success":
             return json.dumps([], ensure_ascii=False)
         return json.dumps(fetch_result["data"], ensure_ascii=False)
