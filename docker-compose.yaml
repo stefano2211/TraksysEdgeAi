@@ -13,7 +13,6 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS}
     depends_on:
       - api
-      - token-api
       - multi-mcp
     networks:
       - mcp-network
@@ -23,28 +22,12 @@ services:
       context: ./api
       dockerfile: Dockerfile.api
     container_name: api
-    expose:
-      - "5000"  # Solo expone internamente, NGINX manejará el tráfico externo
+    ports:
+      - "5000:5000"
     environment:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
     volumes:
       - db_data:/app
-    networks:
-      - mcp-network
-
-  token-api:
-    build:
-      context: ./token_api
-      dockerfile: Dockerfile.token
-    container_name: token-api
-    expose:
-      - "5001"
-    environment:
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - ALGORITHM=${ALGORITHM}
-      - TOKEN_DB=${TOKEN_DB}
-    volumes:
-      - token_db_data:/app
     networks:
       - mcp-network
 
@@ -70,17 +53,15 @@ services:
       - QDRANT_HOST=${QDRANT_HOST}
       - QDRANT_PORT=${QDRANT_PORT}
       - API_URL=${API_URL}
-      - TOKEN_API_URL=${TOKEN_API_URL}
+      - TOKEN=${TOKEN}
       - MCP_PORT=8000
       - DEBUG=${DEBUG}
     depends_on:
       - api
-      - token-api
       - ollama
       - minio
     networks:
       - mcp-network
-
 
   ollama:
     image: ollama/ollama:latest
@@ -140,7 +121,6 @@ networks:
 
 volumes:
   db_data:
-  token_db_data:
   qdrant_data:
   openwebui_data:
   ollama_data:

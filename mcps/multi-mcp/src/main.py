@@ -60,8 +60,7 @@ tool_name = mcp.name.lower().replace(" ", "-")
 
 try:
     auth_client = AuthClient(
-        api_url=config["api"]["url"],
-        token_api_url=config["api"]["token_url"]
+        api_url=config["api"]["url"]
     )
 except Exception as e:
     logger.error(f"Failed to initialize AuthClient: {str(e)}")
@@ -232,6 +231,15 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                 response = auth_client.get(api_endpoint, params=params)
                 response.raise_for_status()
                 all_data = response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"API request failed for {tool_name}: {e.response.status_code} {e.response.text}")
+                return json.dumps({
+                    "status": "error",
+                    "message": f"API request failed: {e.response.text}",
+                    "count": 0,
+                    "data": [],
+                    "covered_dates": []
+                }, ensure_ascii=False)
             except Exception as e:
                 logger.error(f"API request failed for {tool_name}: {str(e)}")
                 return json.dumps({

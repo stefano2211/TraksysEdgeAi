@@ -1,6 +1,5 @@
 api:
   url: ${API_URL}
-  token_url: ${TOKEN_API_URL}
 tools:
   manufacturing:
     type: api
@@ -33,10 +32,10 @@ tools:
     api_endpoint: /employees/
     prompt: |
       Parse the user prompt: {user_prompt}. Extract:
-      - model_filters: dict {{field: [values]}} using field '{default_model_field}'. Only include explicitly mentioned IDs (e.g., 001).
+      - model_filters: dict {{field: [values]}} for all explicitly mentioned categorical fields (e.g., employee_id=001, role=Operator, shift=Morning, assigned_machine=ModelA, production_line=Line3, training_status=Completed).
       - timestamp_filters: dict {{field: {{'from': date, 'to': date}}}} using field '{default_timestamp_field}', standardizing dates to YYYY-MM-DD.
-      - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}}.
-      Example: 'compliance for employee 001 from 2025-04-10 to 2025-04-11, hours_worked > 8' outputs {{"model_filters": {{"{default_model_field}": ["001"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"from": "2025-04-10", "to": "2025-04-11"}}}}, "metric_filters": [{{"field": "hours_worked", "op": ">", "value": 8, "logical": "AND"}}]}}.
+      - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}} for numeric metrics only (e.g., hours_worked).
+      Example: 'dataset for employee 001 with role Operator and shift Morning from 2025-04-10 to 2025-04-11, hours_worked > 8' outputs {{"model_filters": {{"employee_id": ["001"], "role": ["Operator"], "shift": ["Morning"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"from": "2025-04-10", "to": "2025-04-11"}}}}, "metric_filters": [{{"field": "hours_worked", "op": ">", "value": 8, "logical": "AND"}}]}}.
     defaults:
       model_field: employee_id
       timestamp_field: date
