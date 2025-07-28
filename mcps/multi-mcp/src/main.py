@@ -30,7 +30,7 @@ config = expand_env_vars(config)
 logger.info(f"Starting server with API URL: {config['api']['url']}")
 
 # Initialize Ollama client
-ollama_client = Client(host='http://ollama:11434')
+ollama_client = Client(host=os.getenv("OLLAMA_API_BASE_URL"))
 
 # Load prompts from config.yaml with validation
 try:
@@ -103,7 +103,7 @@ def get_tool_client(tool_name: str):
     minio_client = get_minio_client(tool_name)
     return minio_client, qdrant_manager
 
-def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
+def call_llm(prompt: str, system: str = "", model: str = "llama3:8b") -> str:
     try:
         response = ollama_client.chat(
             model=model,

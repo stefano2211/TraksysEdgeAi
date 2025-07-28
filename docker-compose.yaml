@@ -56,6 +56,7 @@ services:
       - TOKEN=${TOKEN}
       - MCP_PORT=8000
       - DEBUG=${DEBUG}
+      - OLLAMA_API_BASE_URL=${OLLAMA_API_BASE_URL}
     depends_on:
       - api
       - ollama
