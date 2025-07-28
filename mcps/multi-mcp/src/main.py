@@ -314,6 +314,19 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
 
 @mcp.tool()
 def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) -> str:
+    """
+    Get PDF Content
+    Retrieves the content of a PDF file associated with a specific key-value from an area/tool.
+
+    Parameters:
+        ctx (Context): Execution context provided by FastMCP.
+        tool_name (str): Name of the area/tool configured in config.yaml.
+        key_values (Dict[str, str]): Dictionary with a single key-value pair identifying the PDF to retrieve.
+
+    Usage:
+        Used to obtain the textual content of a PDF stored in MinIO, using Qdrant cache if available.
+        Ideal for displaying SOPs or documents associated with a specific record.
+    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -365,6 +378,17 @@ def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) ->
 
 @mcp.tool()
 def list_fields(ctx: Context, tool_name: str) -> str:
+    """
+    List Fields
+    Lists the key fields (key_figures and key_values) available in the records of a tool/area.
+
+    Parameters:
+        ctx (Context): Execution context provided by FastMCP.
+        tool_name (str): Name of the area/tool configured in config.yaml.
+
+    Usage:
+        Allows discovering which metrics and filters are available for analysis or queries in a specific tool.
+    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -416,6 +440,20 @@ def list_fields(ctx: Context, tool_name: str) -> str:
 
 @mcp.tool()
 def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
+    """
+    Analyze Compliance
+
+    Analyzes the compliance of a tool/area based on a user prompt in natural language.
+
+    Parameters:
+        ctx (Context): Execution context provided by FastMCP.
+        tool_name (str): Name of the area/tool configured in config.yaml.
+        user_prompt (str): Instruction or query in natural language about the desired compliance analysis.
+
+    Usage:
+        Allows automatic analysis of regulatory or process compliance, combining data, filters, and associated SOPs.
+        The user prompt is interpreted by an LLM to extract relevant filters and metrics.
+    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -548,6 +586,18 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
 
 @mcp.tool()
 def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
+    """
+    Get Dataset
+    Retrieves a filtered dataset from a tool/area based on a user prompt in natural language.
+
+    Parameters:
+        ctx (Context): Execution context provided by FastMCP.
+        tool_name (str): Name of the area/tool configured in config.yaml.
+        user_prompt (str): Instruction or query in natural language about the required data.
+
+    Usage:
+        Allows obtaining subsets of historical or current data, applying filters and metrics automatically extracted from the prompt.
+    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -606,6 +656,16 @@ def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
 
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
+    """
+    List Available Tools
+    Lists all available tools (functions) on the MCP server, along with their parameters and configured areas.
+
+    Parameters:
+        ctx (Context): Execution context provided by FastMCP.
+
+    Usage:
+        Allows programmatic discovery of which functions are exposed via MCP and how they should be called.
+    """
     try:
         tools = []
         try:
