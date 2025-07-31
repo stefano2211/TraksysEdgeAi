@@ -117,7 +117,7 @@ def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
         logger.error(f"Ollama request failed: {str(e)}")
         raise ValueError(f"Ollama request failed: {str(e)}")
 
-def parse_prompt(tool: str, user_prompt: str) -> Dict:
+def parse_prompt(tool: str, user_prompt: str, ctx: Context = None) -> Dict:
     if tool not in PARSE_PROMPTS:
         logger.error(f"Tool {tool} not supported")
         raise ValueError(f"Tool {tool} not supported for prompt parsing")
@@ -131,10 +131,23 @@ def parse_prompt(tool: str, user_prompt: str) -> Dict:
         raise ValueError(f"No prompt defined for tool {tool}")
     
     try:
+        # Obtain available fields from list_fields
+        fields_info = json.loads(list_fields(ctx, tool))
+        if fields_info["status"] != "success":
+            logger.error(f"Failed to retrieve fields for tool {tool}")
+            raise ValueError(f"Failed to retrieve fields for tool {tool}")
+        
+        # Format fields_info as a string for the prompt
+        fields_info_str = json.dumps({
+            "key_figures": fields_info["key_figures"],
+            "key_values": fields_info["key_values"]
+        }, indent=2)
+        
         parse_prompt = parse_prompt_template.format(
             user_prompt=user_prompt,
             default_model_field=defaults.get("model_field", "unknown"),
-            default_timestamp_field=defaults.get("timestamp_field", "date")
+            default_timestamp_field=defaults.get("timestamp_field", "date"),
+            fields_info=fields_info_str
         )
     except KeyError as e:
         logger.error(f"Invalid prompt template for {tool}: missing placeholder {str(e)}")
@@ -470,7 +483,7 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
             }, ensure_ascii=False)
         
         minio_client, qdrant_manager = get_tool_client(tool_name)
-        parsed = parse_prompt(tool_name, user_prompt)
+        parsed = parse_prompt(tool_name, user_prompt, ctx)
         
         key_values = parsed.get("model_filters", {})
         key_figures = parsed.get("metric_filters", [])
@@ -617,7 +630,7 @@ def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
                 "data": []
             }, ensure_ascii=False)
         
-        parsed = parse_prompt(tool_name, user_prompt)
+        parsed = parse_prompt(tool_name, user_prompt, ctx)
         
         key_values = parsed.get("model_filters", {})
         key_figures = parsed.get("metric_filters", [])
