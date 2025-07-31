@@ -103,7 +103,7 @@ def get_tool_client(tool_name: str):
     minio_client = get_minio_client(tool_name)
     return minio_client, qdrant_manager
 
-def call_llm(prompt: str, system: str = "", model: str = "llama3:8b") -> str:
+def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
     try:
         response = ollama_client.chat(
             model=model,
@@ -316,6 +316,7 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
 def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) -> str:
     """
     Get PDF Content
+
     Retrieves the content of a PDF file associated with a specific key-value from an area/tool.
 
     Parameters:
@@ -380,6 +381,7 @@ def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) ->
 def list_fields(ctx: Context, tool_name: str) -> str:
     """
     List Fields
+
     Lists the key fields (key_figures and key_values) available in the records of a tool/area.
 
     Parameters:
@@ -449,10 +451,14 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
         ctx (Context): Execution context provided by FastMCP.
         tool_name (str): Name of the area/tool configured in config.yaml.
         user_prompt (str): Instruction or query in natural language about the desired compliance analysis.
+            The function will extract all relevant filters and metrics from the entire user prompt.
 
     Usage:
-        Allows automatic analysis of regulatory or process compliance, combining data, filters, and associated SOPs.
-        The user prompt is interpreted by an LLM to extract relevant filters and metrics.
+        This function allows automatic analysis of regulatory or process compliance, combining data, filters, and associated SOPs.
+        The user prompt is interpreted by an LLM to extract all relevant filters and metrics.
+
+    Example:
+        analyze_compliance("manufacturing", "Check compliance for ModelA on 2025-04-10, temperature < 80, vibration > 0.5, material Aluminum")
     """
     try:
         if tool_name not in config.get("tools", {}):
@@ -588,15 +594,20 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
 def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
     """
     Get Dataset
+
     Retrieves a filtered dataset from a tool/area based on a user prompt in natural language.
 
     Parameters:
         ctx (Context): Execution context provided by FastMCP.
         tool_name (str): Name of the area/tool configured in config.yaml.
         user_prompt (str): Instruction or query in natural language about the required data.
+            The function will extract all relevant filters and metrics from the entire user prompt.
 
     Usage:
-        Allows obtaining subsets of historical or current data, applying filters and metrics automatically extracted from the prompt.
+        This function allows obtaining subsets of historical or current data, applying filters and metrics automatically extracted from the full prompt.
+
+    Example:
+        get_dataset("human_resources", "Get dataset for employee 001 with role Operator and shift Morning on 2025-04-10, hours_worked > 8, performance_score = 90")
     """
     try:
         if tool_name not in config.get("tools", {}):
@@ -658,6 +669,7 @@ def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
 def list_available_tools(ctx: Context) -> str:
     """
     List Available Tools
+
     Lists all available tools (functions) on the MCP server, along with their parameters and configured areas.
 
     Parameters:
