@@ -17,11 +17,10 @@ tools:
       {fields_info}
       ```
       Parse the user prompt: {user_prompt}. Extract:
-      - model_filters: dict {{field: [values]}} for all explicitly mentioned categorical fields from the available key_values (e.g., machine=ModelA, material=Aluminum, production_line=Line3).
-      - timestamp_filters: dict {{field: {{'from': date, 'to': date}} or {{'specific_date': date}}}} using field '{default_timestamp_field}', standardizing dates to YYYY-MM-DD. Support ranges (e.g., 'from 2025-04-09 to 2025-04-11') and specific dates (e.g., 'on 2025-04-10').
-      - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}} for numeric metrics from the available key_figures only (e.g., temperature, vibration). Support multiple metrics with or without filters (e.g., 'temperature < 80', 'vibration > 0.5', or no filter for all numeric fields).
-      Example: 'compliance for ModelA on 2025-04-10, temperature < 80, vibration > 0.5, material Aluminum' outputs {{"model_filters": {{"machine": ["ModelA"], "material": ["Aluminum"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"specific_date": "2025-04-10"}}}}, "metric_filters": [{{"field": "temperature", "op": "<", "value": 80, "logical": "AND"}}, {{"field": "vibration", "op": ">", "value": 0.5, "logical": "AND"}}]}}.
-      Example: 'dataset for ModelA from 2025-04-09 to 2025-04-11, material Aluminum' outputs {{"model_filters": {{"machine": ["ModelA"], "material": ["Aluminum"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"from": "2025-04-09", "to": "2025-04-11"}}}}, "metric_filters": []}}.
+      - model_filters: dict {{field: [values]}} for categorical fields explicitly mentioned in the prompt. Only include fields from `key_values` in the available fields, excluding '{default_timestamp_field}'. Values must exactly match those in `key_values[field]`. If no valid categorical fields are mentioned, return an empty dict.
+      - timestamp_filters: dict {{'{default_timestamp_field}': {{'from': date, 'to': date}} or {{'specific_date': date}}}} using field '{default_timestamp_field}'. Standardize all dates to YYYY-MM-DD. Support multiple date formats (YYYY-MM-DD, MM-DD-YYYY, DD-MM-YYYY, or textual like 'April 10, 2025'). Handle relative dates (e.g., 'yesterday', 'last week') relative to today (2025-07-31). If no date is specified, return an empty dict.
+      - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}} for numeric fields from `key_figures` only. If no metrics are specified, return an empty list. If a metric is mentioned without an operator, assume '='. Combine multiple metrics with 'AND' unless 'or' is explicitly stated in the prompt.
+      Ignore irrelevant terms like 'report', 'table', or 'analysis'. If the prompt is ambiguous, contains invalid fields/values, or cannot be parsed, return an empty JSON object {{}}. Output only a single JSON object parseable by json.loads().
     defaults:
       model_field: machine
       timestamp_field: date
@@ -41,11 +40,10 @@ tools:
       {fields_info}
       ```
       Parse the user prompt: {user_prompt}. Extract:
-      - model_filters: dict {{field: [values]}} for all explicitly mentioned categorical fields from the available key_values (e.g., employee_id=001, role=Operator, shift=Morning, assigned_machine=ModelA, production_line=Line3, training_status=Completed).
-      - timestamp_filters: dict {{field: {{'from': date, 'to': date}} or {{'specific_date': date}}}} using field '{default_timestamp_field}', standardizing dates to YYYY-MM-DD. Support ranges (e.g., 'from 2025-04-10 to 2025-04-11') and specific dates (e.g., 'on 2025-04-10').
-      - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}} for numeric metrics from the available key_figures only (e.g., hours_worked, performance_score). Support multiple metrics with or without filters (e.g., 'hours_worked > 8', 'performance_score = 90', or no filter for all numeric fields).
-      Example: 'dataset for employee 001 with role Operator and shift Morning on 2025-04-10, hours_worked > 8, performance_score = 90' outputs {{"model_filters": {{"employee_id": ["001"], "role": ["Operator"], "shift": ["Morning"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"specific_date": "2025-04-10"}}}}, "metric_filters": [{{"field": "hours_worked", "op": ">", "value": 8, "logical": "AND"}}, {{"field": "performance_score", "op": "=", "value": 90, "logical": "AND"}}]}}.
-      Example: 'compliance for employee 001 from 2025-04-10 to 2025-04-11, role Operator' outputs {{"model_filters": {{"employee_id": ["001"], "role": ["Operator"]}}, "timestamp_filters": {{"{default_timestamp_field}": {{"from": "2025-04-10", "to": "2025-04-11"}}}}, "metric_filters": []}}.
+      - model_filters: dict {{field: [values]}} for categorical fields explicitly mentioned in the prompt. Only include fields from `key_values` in the available fields, excluding '{default_timestamp_field}'. Values must exactly match those in `key_values[field]`. If no valid categorical fields are mentioned, return an empty dict.
+      - timestamp_filters: dict {{'{default_timestamp_field}': {{'from': date, 'to': date}} or {{'specific_date': date}}}} using field '{default_timestamp_field}'. Standardize all dates to YYYY-MM-DD. Support multiple date formats (YYYY-MM-DD, MM-DD-YYYY, DD-MM-YYYY, or textual like 'April 10, 2025'). Handle relative dates (e.g., 'yesterday', 'last week') relative to today (2025-07-31). If no date is specified, return an empty dict.
+      - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}} for numeric fields from `key_figures` only. If no metrics are specified, return an empty list. If a metric is mentioned without an operator, assume '='. Combine multiple metrics with 'AND' unless 'or' is explicitly stated in the prompt.
+      Ignore irrelevant terms like 'report', 'table', or 'analysis'. If the prompt is ambiguous, contains invalid fields/values, or cannot be parsed, return an empty JSON object {{}}. Output only a single JSON object parseable by json.loads().
     defaults:
       model_field: employee_id
       timestamp_field: date
