@@ -34,23 +34,21 @@ ollama_client = Client(host=os.getenv("OLLAMA_API_BASE_URL"))
 
 # Load prompts from config.yaml with validation
 try:
-    SYSTEM_PROMPT = config.get("prompts", {}).get("system_prompt", "")
-    PARSE_PROMPTS = {tool: config["tools"][tool] for tool in config.get("tools", {})}
-    if not SYSTEM_PROMPT:
-        logger.error("No system_prompt defined in config.yaml")
-        raise ValueError("system_prompt is required in config.yaml")
+    PARSE_PROMPTS = {tool: config["tools"][tool]["prompts"] for tool in config.get("tools", {})}
     if not PARSE_PROMPTS:
-        logger.error("No parse_prompts defined in config.yaml")
-        raise ValueError("parse_prompts is required in config.yaml")
-    for tool, tool_config in PARSE_PROMPTS.items():
-        if not isinstance(tool_config, dict) or "prompt" not in tool_config:
-            logger.error(f"Invalid parse_prompts configuration for tool {tool}")
-            raise ValueError(f"Invalid parse_prompts configuration for tool {tool}")
-        if "{user_prompt}" not in tool_config["prompt"]:
-            logger.error(f"Invalid prompt for tool {tool}")
-            raise ValueError(f"Invalid prompt for tool {tool}: missing {user_prompt} placeholder")
-        if "defaults" not in tool_config or not isinstance(tool_config["defaults"], dict):
-            tool_config["defaults"] = {}
+        logger.error("No prompts defined in config.yaml")
+        raise ValueError("prompts is required in config.yaml")
+    for tool, tool_prompts in PARSE_PROMPTS.items():
+        if not isinstance(tool_prompts, dict):
+            logger.error(f"Invalid prompts configuration for tool {tool}")
+            raise ValueError(f"Invalid prompts configuration for tool {tool}")
+        for func, prompt_config in tool_prompts.items():
+            if not isinstance(prompt_config, dict) or "parse_prompt" not in prompt_config or "system_prompt" not in prompt_config:
+                logger.error(f"Invalid prompt configuration for {tool}.{func}")
+                raise ValueError(f"Invalid prompt configuration for {tool}.{func}")
+            if "{user_prompt}" not in prompt_config["parse_prompt"]:
+                logger.error(f"Invalid parse_prompt for {tool}.{func}")
+                raise ValueError(f"Invalid parse_prompt for {tool}.{func}: missing {user_prompt} placeholder")
 except Exception as e:
     logger.error(f"Failed to validate prompts configuration: {str(e)}")
     raise
@@ -117,18 +115,24 @@ def call_llm(prompt: str, system: str = "", model: str = "llama3.1:8b") -> str:
         logger.error(f"Ollama request failed: {str(e)}")
         raise ValueError(f"Ollama request failed: {str(e)}")
 
-def parse_prompt(tool: str, user_prompt: str, ctx: Context = None) -> Dict:
+def parse_prompt(tool: str, user_prompt: str, ctx: Context = None, func_name: str = None) -> Dict:
     if tool not in PARSE_PROMPTS:
         logger.error(f"Tool {tool} not supported")
         raise ValueError(f"Tool {tool} not supported for prompt parsing")
     
-    tool_config = PARSE_PROMPTS[tool]
-    parse_prompt_template = tool_config.get("prompt", "")
-    defaults = tool_config.get("defaults", {})
+    tool_prompts = PARSE_PROMPTS[tool]
+    if func_name not in tool_prompts:
+        logger.error(f"No prompt defined for function {func_name} in tool {tool}")
+        raise ValueError(f"No prompt defined for function {func_name} in tool {tool}")
+    
+    prompt_config = tool_prompts[func_name]
+    system_prompt = prompt_config.get("system_prompt", "")
+    parse_prompt_template = prompt_config.get("parse_prompt", "")
+    defaults = config["tools"][tool].get("defaults", {})
     
     if not parse_prompt_template:
-        logger.error(f"No prompt defined for tool {tool}")
-        raise ValueError(f"No prompt defined for tool {tool}")
+        logger.error(f"No parse_prompt defined for {tool}.{func_name}")
+        raise ValueError(f"No parse_prompt defined for {tool}.{func_name}")
     
     try:
         # Obtain available fields from list_fields
@@ -150,26 +154,26 @@ def parse_prompt(tool: str, user_prompt: str, ctx: Context = None) -> Dict:
             fields_info=fields_info_str
         )
     except KeyError as e:
-        logger.error(f"Invalid prompt template for {tool}: missing placeholder {str(e)}")
-        raise ValueError(f"Invalid prompt template for {tool}: {str(e)}")
+        logger.error(f"Invalid prompt template for {tool}.{func_name}: missing placeholder {str(e)}")
+        raise ValueError(f"Invalid prompt template for {tool}.{func_name}: {str(e)}")
     
-    response = call_llm(parse_prompt, system=SYSTEM_PROMPT)
+    response = call_llm(parse_prompt, system=system_prompt)
     try:
         parsed = json.loads(response)
         if not isinstance(parsed, dict):
-            logger.error(f"LLM returned invalid JSON structure for {tool}")
+            logger.error(f"LLM returned invalid JSON structure for {tool}.{func_name}")
             raise ValueError("LLM returned invalid JSON structure")
         if "metric_filters" in parsed:
             for filt in parsed["metric_filters"]:
                 if not isinstance(filt, dict) or "field" not in filt:
-                    logger.error(f"Invalid metric filter for {tool}: {filt}")
+                    logger.error(f"Invalid metric filter for {tool}.{func_name}: {filt}")
                     raise ValueError(f"Invalid metric filter: {filt}")
         return parsed
     except json.JSONDecodeError as e:
-        logger.error(f"LLM did not return valid JSON for {tool}: {str(e)}")
+        logger.error(f"LLM did not return valid JSON for {tool}.{func_name}: {str(e)}")
         raise ValueError("LLM did not return valid JSON")
     except ValueError as e:
-        logger.error(f"JSON validation failed for {tool}: {str(e)}")
+        logger.error(f"JSON validation failed for {tool}.{func_name}: {str(e)}")
         raise
 
 def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List[str]]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
@@ -483,7 +487,7 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
             }, ensure_ascii=False)
         
         minio_client, qdrant_manager = get_tool_client(tool_name)
-        parsed = parse_prompt(tool_name, user_prompt, ctx)
+        parsed = parse_prompt(tool_name, user_prompt, ctx, func_name="analyze_compliance")
         
         key_values = parsed.get("model_filters", {})
         key_figures = parsed.get("metric_filters", [])
@@ -630,7 +634,7 @@ def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
                 "data": []
             }, ensure_ascii=False)
         
-        parsed = parse_prompt(tool_name, user_prompt, ctx)
+        parsed = parse_prompt(tool_name, user_prompt, ctx, func_name="get_dataset")
         
         key_values = parsed.get("model_filters", {})
         key_figures = parsed.get("metric_filters", [])
