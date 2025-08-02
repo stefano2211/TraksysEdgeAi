@@ -56,14 +56,6 @@ except Exception as e:
 mcp = FastMCP("Multi-Area Compliance Processor")
 tool_name = mcp.name.lower().replace(" ", "-")
 
-try:
-    auth_client = AuthClient(
-        api_url=config["api"]["url"]
-    )
-except Exception as e:
-    logger.error(f"Failed to initialize AuthClient: {str(e)}")
-    raise
-
 encryption_manager = EncryptionManager(
     os.getenv("ENCRYPTION_KEY")
 )
@@ -239,6 +231,31 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                     "data": [],
                     "covered_dates": []
                 }, ensure_ascii=False)
+            
+            # Initialize AuthClient only for API type and check for TOKEN
+            token = os.getenv("TOKEN")
+            if not token:
+                logger.error(f"No TOKEN provided for API request in tool {tool_name}")
+                return json.dumps({
+                    "status": "error",
+                    "message": f"No TOKEN provided for API request in tool {tool_name}",
+                    "count": 0,
+                    "data": [],
+                    "covered_dates": []
+                }, ensure_ascii=False)
+            
+            try:
+                auth_client = AuthClient(api_url=config["api"]["url"])
+            except Exception as e:
+                logger.error(f"Failed to initialize AuthClient for {tool_name}: {str(e)}")
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Failed to initialize AuthClient: {str(e)}",
+                    "count": 0,
+                    "data": [],
+                    "covered_dates": []
+                }, ensure_ascii=False)
+            
             params = {}
             if specific_dates:
                 params["specific_date"] = specific_dates[0]
@@ -335,12 +352,10 @@ def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) ->
     Get PDF Content
 
     Retrieves the content of a PDF file associated with a specific key-value from an area/tool.
-
     Parameters:
         ctx (Context): Execution context provided by FastMCP.
         tool_name (str): Name of the area/tool configured in config.yaml.
         key_values (Dict[str, str]): Dictionary with a single key-value pair identifying the PDF to retrieve.
-
     Usage:
         Used to obtain the textual content of a PDF stored in MinIO, using Qdrant cache if available.
         Ideal for displaying SOPs or documents associated with a specific record.
@@ -430,9 +445,50 @@ def list_fields(ctx: Context, tool_name: str) -> str:
                     "key_figures": [],
                     "key_values": {}
                 }, ensure_ascii=False)
-            response = auth_client.get(api_endpoint)
-            response.raise_for_status()
-            all_data = response.json()
+            
+            # Initialize AuthClient only for API type and check for TOKEN
+            token = os.getenv("TOKEN")
+            if not token:
+                logger.error(f"No TOKEN provided for API request in tool {tool_name}")
+                return json.dumps({
+                    "status": "error",
+                    "message": f"No TOKEN provided for API request in tool {tool_name}",
+                    "key_figures": [],
+                    "key_values": {}
+                }, ensure_ascii=False)
+            
+            try:
+                auth_client = AuthClient(api_url=config["api"]["url"])
+            except Exception as e:
+                logger.error(f"Failed to initialize AuthClient for {tool_name}: {str(e)}")
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Failed to initialize AuthClient: {str(e)}",
+                    "key_figures": [],
+                    "key_values": {}
+                }, ensure_ascii=False)
+            
+            try:
+                response = auth_client.get(api_endpoint)
+                response.raise_for_status()
+                all_data = response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"API request failed for {tool_name}: {e.response.status_code} {e.response.text}")
+                return json.dumps({
+                    "status": "error",
+                    "message": f"API request failed: {e.response.text}",
+                    "key_figures": [],
+                    "key_values": {}
+                }, ensure_ascii=False)
+            except Exception as e:
+                logger.error(f"API request failed for {tool_name}: {str(e)}")
+                return json.dumps({
+                    "status": "error",
+                    "message": f"API request failed: {str(e)}",
+                    "key_figures": [],
+                    "key_values": {}
+                }, ensure_ascii=False)
+        
         if not all_data:
             return json.dumps({
                 "status": "no_data",
