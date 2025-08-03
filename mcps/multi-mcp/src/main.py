@@ -127,13 +127,11 @@ def parse_prompt(tool: str, user_prompt: str, ctx: Context = None, func_name: st
         raise ValueError(f"No parse_prompt defined for {tool}.{func_name}")
     
     try:
-        # Obtain available fields from list_fields
         fields_info = json.loads(list_fields(ctx, tool))
         if fields_info["status"] != "success":
             logger.error(f"Failed to retrieve fields for tool {tool}")
             raise ValueError(f"Failed to retrieve fields for tool {tool}")
         
-        # Format fields_info as a string for the prompt
         fields_info_str = json.dumps({
             "key_figures": fields_info["key_figures"],
             "key_values": fields_info["key_values"]
@@ -168,6 +166,19 @@ def parse_prompt(tool: str, user_prompt: str, ctx: Context = None, func_name: st
         logger.error(f"JSON validation failed for {tool}.{func_name}: {str(e)}")
         raise
 
+def get_nested_value(record, key):
+    """Obtiene el valor de un campo anidado o en una lista."""
+    keys = key.replace("[]", "").split(".")
+    current = record
+    for k in keys:
+        if isinstance(current, list) and current:
+            current = current[0]  # Tomar el primer elemento de la lista
+        if isinstance(current, dict):
+            current = current.get(k)
+        else:
+            return None
+    return current
+
 def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List[str]]] = None, key_figures: Optional[List[Dict]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None) -> str:
     try:
         if tool_name not in config.get("tools", {}):
@@ -195,32 +206,11 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                             "min": item.get("min", None),
                             "max": item.get("max", None)
                         }
-        if not normalized_key_figures:
-            fields_info = json.loads(list_fields(ctx, tool_name))
-            if fields_info["status"] != "success":
-                return json.dumps({
-                    "status": "error",
-                    "message": "Could not retrieve valid fields",
-                    "count": 0,
-                    "data": [],
-                    "covered_dates": []
-                }, ensure_ascii=False)
-            normalized_key_figures = fields_info["key_figures"]
-        else:
-            normalized_key_figures = normalized_key_figures or []
-
+        
         fields_info = DataValidator.validate_fields(ctx, normalized_key_figures, key_values, start_date, end_date, specific_dates, tool_name=tool_name)
         
         if tool_config["type"] == "json":
             all_data = minio_client.get_all_json_logs()
-            if not all_data:
-                return json.dumps({
-                    "status": "no_data",
-                    "message": f"No data found in bucket {minio_client.bucket}/{minio_client.mes_logs_prefix}",
-                    "count": 0,
-                    "data": [],
-                    "covered_dates": []
-                }, ensure_ascii=False)
         else:
             api_endpoint = tool_config.get("api_endpoint")
             if not api_endpoint or api_endpoint == "null":
@@ -232,7 +222,6 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                     "covered_dates": []
                 }, ensure_ascii=False)
             
-            # Initialize AuthClient only for API type and check for TOKEN
             token = os.getenv("TOKEN")
             if not token:
                 logger.error(f"No TOKEN provided for API request in tool {tool_name}")
@@ -283,10 +272,29 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                     "data": [],
                     "covered_dates": []
                 }, ensure_ascii=False)
-
+        
+        if not all_data:
+            return json.dumps({
+                "status": "no_data",
+                "message": f"No data found in bucket {minio_client.bucket}/{minio_client.mes_logs_prefix}",
+                "count": 0,
+                "data": [],
+                "covered_dates": []
+            }, ensure_ascii=False)
+        
         processed_data = []
         for record in all_data:
-            if all(record.get(k) in v for k, v in key_values.items() if v):
+            matches = True
+            for k, v in key_values.items():
+                value = get_nested_value(record, k)
+                if isinstance(value, list):
+                    matches = matches and any(val in value for val in v)
+                else:
+                    matches = matches and (value in v if value else False)
+                if not matches:
+                    break
+            
+            if matches:
                 date_field = DataValidator.identify_date_field([record])
                 record_date = DataValidator.detect_and_normalize_date(record, date_field)
                 if (not specific_dates and not start_date and not end_date) or \
@@ -294,8 +302,9 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                    (start_date and end_date and start_date <= record_date <= end_date):
                     item = {"date": record_date or "Unknown"}
                     for field in fields_info["key_figures"] + list(fields_info["key_values"].keys()):
-                        if field in record:
-                            item[field] = record[field]
+                        value = get_nested_value(record, field)
+                        if value is not None:
+                            item[field] = value
                     for field, ranges in figure_ranges.items():
                         if field in item:
                             value = item[field]
@@ -307,12 +316,13 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                             else:
                                 item[field] = None
                     processed_data.append(item)
-
+        
         if processed_data:
             processed_data = [
                 r for r in processed_data
-                if all(r.get(k) in v for k, v in key_values.items() if v)
+                if all(get_nested_value(r, k) in v for k, v in key_values.items() if v)
             ]
+        
         if normalized_key_figures:
             missing_figures = [k for k in normalized_key_figures if not any(k in r for r in processed_data)]
             if missing_figures:
@@ -323,11 +333,13 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
                     "message": f"No data found for fields: {', '.join(missing_figures)}",
                     "covered_dates": []
                 }, ensure_ascii=False)
+        
         response_fields = ["date"] + list(key_values.keys()) + normalized_key_figures
         response_data = [
             {k: r[k] for k in response_fields if k in r and r[k] is not None}
             for r in processed_data
         ]
+        
         coverage = DataValidator.check_date_coverage(response_data, start_date, end_date, specific_dates)
         return json.dumps({
             "status": "success" if response_data else "no_data",
@@ -348,18 +360,6 @@ def fetch_data(ctx: Context, tool_name: str, key_values: Optional[Dict[str, List
 
 @mcp.tool()
 def get_pdf_content(ctx: Context, tool_name: str, key_values: Dict[str, str]) -> str:
-    """
-    Get PDF Content
-
-    Retrieves the content of a PDF file associated with a specific key-value from an area/tool.
-    Parameters:
-        ctx (Context): Execution context provided by FastMCP.
-        tool_name (str): Name of the area/tool configured in config.yaml.
-        key_values (Dict[str, str]): Dictionary with a single key-value pair identifying the PDF to retrieve.
-    Usage:
-        Used to obtain the textual content of a PDF stored in MinIO, using Qdrant cache if available.
-        Ideal for displaying SOPs or documents associated with a specific record.
-    """
     try:
         if tool_name not in config.get("tools", {}):
             return json.dumps({
@@ -414,14 +414,14 @@ def list_fields(ctx: Context, tool_name: str) -> str:
     """
     List Fields
 
-    Lists the key fields (key_figures and key_values) available in the records of a tool/area.
+    Lists the key fields (key_figures and key_values) available in the records of a tool/area, including nested fields and lists.
 
     Parameters:
         ctx (Context): Execution context provided by FastMCP.
         tool_name (str): Name of the area/tool configured in config.yaml.
 
     Usage:
-        Allows discovering which metrics and filters are available for analysis or queries in a specific tool.
+        Allows discovering which metrics and filters are available for analysis or queries in a specific tool, including nested fields (e.g., parameters.temperature) and lists (e.g., tags, readings[].sensor).
     """
     try:
         if tool_name not in config.get("tools", {}):
@@ -446,7 +446,6 @@ def list_fields(ctx: Context, tool_name: str) -> str:
                     "key_values": {}
                 }, ensure_ascii=False)
             
-            # Initialize AuthClient only for API type and check for TOKEN
             token = os.getenv("TOKEN")
             if not token:
                 logger.error(f"No TOKEN provided for API request in tool {tool_name}")
@@ -496,9 +495,52 @@ def list_fields(ctx: Context, tool_name: str) -> str:
                 "key_figures": [],
                 "key_values": {}
             }, ensure_ascii=False)
-        sample = all_data[0]
-        key_figures = [k for k, v in sample.items() if isinstance(v, (int, float))]
-        key_values = {k: sorted({rec[k] for rec in all_data if k in rec}) for k, v in sample.items() if isinstance(v, str)}
+        
+        key_figures = []
+        key_values = {}
+        
+        def extract_fields(data, prefix="", all_data_ref=None):
+            """Extrae campos numéricos y categóricos recursivamente de los datos."""
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    full_key = f"{prefix}{key}" if prefix else key
+                    if isinstance(value, dict):
+                        extract_fields(value, f"{full_key}.", all_data_ref)
+                    elif isinstance(value, list) and value and isinstance(value[0], dict):
+                        extract_fields(value[0], f"{full_key}[].", all_data_ref)
+                    elif isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+                        # Recolectar valores de listas de strings
+                        values = set()
+                        for rec in all_data_ref:
+                            nested_value = get_nested_value(rec, full_key)
+                            if isinstance(nested_value, list) and all(isinstance(v, str) for v in nested_value):
+                                values.update(nested_value)
+                        if values:
+                            key_values[full_key] = sorted(values)
+                    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                        key_figures.append(full_key)
+                    elif isinstance(value, str) and value:
+                        # Recolectar valores de campos de strings
+                        values = set()
+                        for rec in all_data_ref:
+                            nested_value = get_nested_value(rec, full_key)
+                            if isinstance(nested_value, str) and nested_value:
+                                values.add(nested_value)
+                        if values:
+                            key_values[full_key] = sorted(values)
+            elif isinstance(data, list) and data and isinstance(data[0], dict):
+                # Procesar listas de diccionarios
+                for item in data:
+                    extract_fields(item, prefix, all_data_ref)
+        
+        # Procesar todos los registros para recolectar valores
+        for record in all_data:
+            extract_fields(record, all_data_ref=all_data)
+        
+        # Eliminar duplicados en key_figures y key_values
+        key_figures = sorted(list(set(key_figures)))
+        key_values = {k: sorted(list(set(v))) for k, v in key_values.items() if v}
+        
         return json.dumps({
             "status": "success",
             "key_figures": key_figures,
@@ -518,20 +560,19 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
     """
     Analyze Compliance
 
-    Analyzes the compliance of a tool/area based on a user prompt in natural language.
+    Analyzes the compliance of a tool/area based on a user prompt in natural language, supporting nested fields and lists.
 
     Parameters:
         ctx (Context): Execution context provided by FastMCP.
         tool_name (str): Name of the area/tool configured in config.yaml.
         user_prompt (str): Instruction or query in natural language about the desired compliance analysis.
-            The function will extract all relevant filters and metrics from the entire user prompt.
 
     Usage:
         This function allows automatic analysis of regulatory or process compliance, combining data, filters, and associated SOPs.
-        The user prompt is interpreted by an LLM to extract all relevant filters and metrics.
+        Supports nested fields (e.g., parameters.temperature) and lists (e.g., tags contains critical).
 
     Example:
-        analyze_compliance("manufacturing", "Check compliance for ModelA on 2025-04-10, temperature < 80, vibration > 0.5, material Aluminum")
+        analyze_compliance("manufacturing", "Check compliance for ModelA on 2025-04-10, parameters.temperature < 80, tags contains critical")
     """
     try:
         if tool_name not in config.get("tools", {}):
@@ -567,9 +608,6 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
                         "min": item.get("value") if item.get("op") == ">" else None,
                         "max": item.get("value") if item.get("op") == "<" else None
                     })
-                else:
-                    logger.warning(f"Invalid metric filter: {item}")
-                    continue
         
         metrics_analyzed = [kf["field"] for kf in normalized_key_figures]
         
@@ -584,19 +622,6 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
                 "analysis_notes": [str(e)]
             }, ensure_ascii=False)
         
-        valid_values = json.loads(list_fields(ctx, tool_name))["key_values"]
-        identifier_field = None
-        identifier_value = None
-        if valid_values:
-            for field in valid_values.keys():
-                if field in key_values:
-                    identifier_field = field
-                    identifier_value = key_values[field][0] if key_values[field] else None
-                    break
-            if not identifier_field:
-                identifier_field = next(iter(valid_values))
-                identifier_value = key_values.get(identifier_field, [None])[0]
-        
         fetch_result = json.loads(fetch_data(ctx, tool_name, key_values, normalized_key_figures, start_date, end_date, specific_dates))
         analysis_notes = [fetch_result.get("message", "")] if fetch_result.get("message") else []
         if fetch_result["status"] == "no_data":
@@ -604,7 +629,7 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
                 "status": "no_data",
                 "message": fetch_result["message"],
                 "period": f"{start_date or 'N/A'} to {end_date or 'N/A'}" if start_date else f"Specific dates: {specific_dates or 'N/A'}",
-                "identifier": f"{identifier_field}={identifier_value}" if identifier_field and identifier_value else "all records",
+                "identifier": "all records",
                 "metrics_analyzed": metrics_analyzed,
                 "results": [],
                 "sop_content": {},
@@ -627,7 +652,7 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
                 else:
                     sop_content[f"{field}={value}"] = ""
                     analysis_notes.append(f"Failed to load SOP for {field}={value}: {pdf_result['message']}")
-
+        
         results = []
         for record in fetch_result["data"]:
             result_entry = {
@@ -648,7 +673,7 @@ def analyze_compliance(ctx: Context, tool_name: str, user_prompt: str) -> str:
         return json.dumps({
             "status": "success",
             "period": period,
-            "identifier": f"{identifier_field}={identifier_value}" if identifier_field and identifier_value else "all records",
+            "identifier": "all records",
             "metrics_analyzed": metrics_analyzed,
             "results": results,
             "sop_content": sop_content,
@@ -668,19 +693,18 @@ def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
     """
     Get Dataset
 
-    Retrieves a filtered dataset from a tool/area based on a user prompt in natural language.
+    Retrieves a filtered dataset from a tool/area based on a user prompt in natural language, supporting nested fields and lists.
 
     Parameters:
         ctx (Context): Execution context provided by FastMCP.
         tool_name (str): Name of the area/tool configured in config.yaml.
         user_prompt (str): Instruction or query in natural language about the required data.
-            The function will extract all relevant filters and metrics from the entire user prompt.
 
     Usage:
         This function allows obtaining subsets of historical or current data, applying filters and metrics automatically extracted from the full prompt.
 
     Example:
-        get_dataset("human_resources", "Get dataset for employee 001 with role Operator and shift Morning on 2025-04-10, hours_worked > 8, performance_score = 90")
+        get_dataset("human_resources", "Get dataset for employee 001 with role Operator on 2025-04-10, hours_worked > 8, tags contains critical")
     """
     try:
         if tool_name not in config.get("tools", {}):
@@ -714,9 +738,6 @@ def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
                         "min": item.get("value") if item.get("op") == ">" else None,
                         "max": item.get("value") if item.get("op") == "<" else None
                     })
-                else:
-                    logger.warning(f"Invalid metric filter: {item}")
-                    continue
         
         metrics_analyzed = [kf["field"] for kf in normalized_key_figures]
         
@@ -740,17 +761,6 @@ def get_dataset(ctx: Context, tool_name: str, user_prompt: str) -> str:
 
 @mcp.tool()
 def list_available_tools(ctx: Context) -> str:
-    """
-    List Available Tools
-
-    Lists all available tools (functions) on the MCP server, along with their parameters and configured areas.
-
-    Parameters:
-        ctx (Context): Execution context provided by FastMCP.
-
-    Usage:
-        Allows programmatic discovery of which functions are exposed via MCP and how they should be called.
-    """
     try:
         tools = []
         try:

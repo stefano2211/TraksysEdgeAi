@@ -19,17 +19,17 @@ class DataValidator:
     def identify_date_field(data: List[Dict]) -> str:
         """Identifica dinámicamente el campo de fecha en los datos."""
         if not data or not isinstance(data, list) or not data[0]:
-            return "date"  # Fallback a "date" si no hay datos
-        for record in data[:min(5, len(data))]:  # Revisa hasta 5 registros
+            return "date"
+        for record in data[:min(5, len(data))]:
             for field, value in record.items():
                 if isinstance(value, str) and value.strip():
                     for fmt in DataValidator.DATE_FORMATS:
                         try:
                             datetime.strptime(value.strip(), fmt)
-                            return field  # Retorna el primer campo que parece una fecha
+                            return field
                         except ValueError:
                             continue
-        return "date"  # Fallback si no se encuentra un campo de fecha válido
+        return "date"
 
     @staticmethod
     def detect_and_normalize_date(data_or_str: str | Dict, field_name: Optional[str] = None) -> Optional[str]:
@@ -73,7 +73,6 @@ class DataValidator:
                 message = f"No records from {start_date} to {end_date}"
             return {"has_data": False, "covered_dates": [], "message": message}
 
-        # Identificar el campo de fecha dinámicamente
         date_field = DataValidator.identify_date_field(data)
         covered_dates = sorted(set(
             DataValidator.detect_and_normalize_date(r.get(date_field, "")) or "Desconocida"
@@ -100,14 +99,48 @@ class DataValidator:
 
     @staticmethod
     def validate_fields(ctx: Context, key_figures: List, key_values: Dict, start_date: Optional[str] = None, end_date: Optional[str] = None, specific_dates: Optional[List[str]] = None, tool_name: str = None) -> Dict:
-        """Valida los campos proporcionados contra los campos disponibles."""
-        from main import list_fields  # Importar aquí para evitar circularidad
+        """Valida los campos proporcionados contra los campos disponibles, incluyendo campos anidados y listas."""
+        from main import list_fields
         if not tool_name:
             raise ValueError("tool_name is required for field validation")
         logger.info(f"Validating fields for tool_name: {tool_name}")
         fields_info = json.loads(list_fields(ctx, tool_name))
         if fields_info["status"] != "success":
             raise ValueError("Failed to validate fields")
+        
+        errors = []
+        normalized_key_figures = []
+        for item in key_figures:
+            if isinstance(item, str):
+                normalized_key_figures.append(item)
+            elif isinstance(item, dict) and "field" in item:
+                normalized_key_figures.append(item["field"])
+                if "min" in item and not isinstance(item["min"], (int, float, type(None))):
+                    errors.append(f"Invalid min value for {item['field']}: must be numeric")
+                if "max" in item and not isinstance(item["max"], (int, float, type(None))):
+                    errors.append(f"Invalid max value for {item['field']}: must be numeric")
+                if "min" in item and "max" in item and item["min"] is not None and item["max"] is not None and item["min"] > item["max"]:
+                    errors.append(f"Invalid range for {item['field']}: min cannot be greater than max")
+            else:
+                errors.append(f"Invalid key_figures format: {item}")
+        
+        invalid_figures = [f for f in normalized_key_figures if f not in fields_info["key_figures"]]
+        if invalid_figures:
+            errors.append(f"Invalid numeric fields: {invalid_figures}")
+        
+        for k, v in key_values.items():
+            if k not in fields_info["key_values"]:
+                errors.append(f"Invalid categorical field: {k}")
+            else:
+                valid_values = fields_info["key_values"].get(k, [])
+                if isinstance(v, list):
+                    invalid_values = [val for val in v if val not in valid_values]
+                    if invalid_values:
+                        errors.append(f"Invalid categorical values for {k}: {invalid_values}")
+                else:
+                    if v not in valid_values:
+                        errors.append(f"Invalid categorical value for {k}: {v}")
+        
         if (start_date and not end_date) or (end_date and not start_date):
             raise ValueError("Both start_date and end_date required")
         if start_date and end_date and specific_dates:
@@ -119,41 +152,10 @@ class DataValidator:
                 raise ValueError("start_date cannot be after end_date")
         if specific_dates:
             specific_dates = [DataValidator.validate_date(d, f"specific_date[{i}]") for i, d in enumerate(specific_dates)]
-        errors = []
-        # Normalizar y validar key_figures
-        normalized_key_figures = []
-        for item in key_figures:
-            if isinstance(item, str):
-                normalized_key_figures.append(item)
-            elif isinstance(item, dict) and "field" in item:
-                normalized_key_figures.append(item["field"])
-                # Validar rangos
-                if "min" in item and not isinstance(item["min"], (int, float, type(None))):
-                    errors.append(f"Invalid min value for {item['field']}: must be numeric")
-                if "max" in item and not isinstance(item["max"], (int, float, type(None))):
-                    errors.append(f"Invalid max value for {item['field']}: must be numeric")
-                if "min" in item and "max" in item and item["min"] is not None and item["max"] is not None and item["min"] > item["max"]:
-                    errors.append(f"Invalid range for {item['field']}: min cannot be greater than max")
-            else:
-                errors.append(f"Invalid key_figures format: {item}")
-        invalid_figures = [f for f in normalized_key_figures if f not in fields_info["key_figures"]]
-        if invalid_figures:
-            errors.append(f"Invalid numeric fields: {invalid_figures}")
-        # Validar key_values, manejando listas de valores
-        for k, v in key_values.items():
-            if k not in fields_info["key_values"]:
-                errors.append(f"Invalid categorical field/value: {k}={v}")
-            else:
-                valid_values = fields_info["key_values"].get(k, [])
-                if isinstance(v, list):
-                    invalid_values = [val for val in v if val not in valid_values]
-                    if invalid_values:
-                        errors.append(f"Invalid categorical field/value: {k}={invalid_values}")
-                else:
-                    if v not in valid_values:
-                        errors.append(f"Invalid categorical field/value: {k}={v}")
+        
         if errors:
             raise ValueError(" | ".join(errors))
+        
         return fields_info
 
 def expand_env_vars(obj):
