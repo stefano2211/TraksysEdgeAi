@@ -64,6 +64,39 @@ services:
     networks:
       - mcp-network
 
+  image-mcp:
+    build:
+      context: .
+      dockerfile: mcps/Dockerfile
+      args:
+        MCP_NAME: image-mcp 
+        MCP_PORT: 8001
+        CONFIG_FILE: config.yaml
+    container_name: image-mcp
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_SECURE=${MINIO_SECURE}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - QDRANT_HOST=${QDRANT_HOST}
+      - QDRANT_PORT=${QDRANT_PORT}
+      - API_URL=${API_URL}
+      - TOKEN=${TOKEN}
+      - MCP_PORT=8001
+      - DEBUG=${DEBUG}
+      - OLLAMA_API_BASE_URL=${OLLAMA_API_BASE_URL}
+    depends_on:
+      - api
+      - ollama
+      - minio
+    networks:
+      - mcp-network
+
   ollama:
     image: ollama/ollama:latest
     container_name: ollama

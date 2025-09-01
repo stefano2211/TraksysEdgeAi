@@ -1,0 +1,8 @@
+PyYAML==6.0.1 
+fastapi==0.103.2
+pydantic
+pyjwt
+uvicorn
+httpx==0.27.2 
+ollama
+Pillow==10.4.0 

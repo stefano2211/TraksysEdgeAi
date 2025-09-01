@@ -1,0 +1,35 @@
+api:
+  url: ${API_URL}
+tools:
+  manufacturing:
+    type: api
+    minio:
+      bucket: manufacturing-images
+      image_prefix: images/
+      mes_logs_prefix: mes-logs/
+    qdrant:
+      collections: ["image_cache"]
+      image_cache_ttl: 36000
+    api_endpoint: /machines/
+    prompts:
+      get_images:
+        system_prompt: |
+          You are an expert prompt parser that responds ONLY with valid JSON. Do not include explanations, markdown, or any extra text. Output must be a single JSON object parseable by json.loads(). Start with {{ and end with }}.
+        parse_prompt: |
+          Available fields:
+          ```json
+          {fields_info}
+          ```
+          Parse the user prompt: {user_prompt}. Extract:
+          - model_filters: dict {{field: [values]}} for categorical fields explicitly mentioned in the prompt, including nested fields (e.g., "parameters.status") and list fields (e.g., "defect_type"). Only include fields from `key_values` in the available fields, excluding '{{default_timestamp_field}}'. Values must exactly match those in `key_values[field]`. If no valid categorical fields are mentioned, return an empty dict.
+          - timestamp_filters: dict {{'{{default_timestamp_field}}': {{'from': date, 'to': date}} or {{'specific_date': date}}}} using field '{{default_timestamp_field}}'. Standardize all dates to YYYY-MM-DD. Support multiple date formats (YYYY-MM-DD, MM-DD-YYYY, DD-MM-YYYY, or textual like 'April 10, 2025'). Handle relative dates (e.g., 'yesterday', 'last week') relative to today (2025-08-30). If no date is specified, return an empty dict.
+          - metric_filters: list of dict {{'field': str, 'op': '>'|'<'|'=', 'value': num, 'logical': 'AND'|'OR'}} for numeric fields from `key_figures` only, including nested fields (e.g., "parameters.temperature"). If no metrics are specified, return an empty list. If a metric is mentioned without an operator, assume '='. Combine multiple metrics with 'AND' unless 'or' is explicitly stated in the prompt.
+          Ignore irrelevant terms like 'report', 'table', or 'images'. Support nested field notation (e.g., "parameters.temperature < 80") and list filtering (e.g., "defect_type contains scratch"). If the prompt is ambiguous, contains invalid fields/values, or cannot be parsed, return an empty JSON object {{}}. Output only a single JSON object parseable by json.loads().
+      list_fields:
+        system_prompt: |
+          You are an expert prompt parser that responds ONLY with valid JSON. Do not include explanations, markdown, or any extra text. Output must be a single JSON object parseable by json.loads(). Start with {{ and end with }}.
+        parse_prompt: |
+          Return an empty JSON object {{}} as no parsing is required for list_fields.
+    defaults:
+      model_field: machine
+      timestamp_field: date

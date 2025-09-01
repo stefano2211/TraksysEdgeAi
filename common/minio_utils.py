@@ -14,7 +14,7 @@ class MinioClient:
         if not all([endpoint, access_key, secret_key]):
             raise ValueError("MinIO endpoint, access_key, and secret_key must be provided")
         self.client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
-        self.bucket_name = bucket  # Usa el bucket especificado en config.yaml
+        self.bucket_name = bucket
         self.sop_prefix = sop_prefix
         self.mes_logs_prefix = mes_logs_prefix
 
@@ -31,6 +31,26 @@ class MinioClient:
         except S3Error as e:
             logger.error(f"Failed to create bucket or prefixes in {self.bucket_name}: {str(e)}")
             raise
+
+    def get_object(self, object_name: str) -> bytes:
+        """Retrieve an object from MinIO and return its data as bytes."""
+        try:
+            # Prepend the image_prefix (e.g., 'images/') to the object name
+            full_object_name = f"{self.sop_prefix}{object_name}"
+            response = self.client.get_object(self.bucket_name, full_object_name)
+            data = response.read()
+            response.close()
+            response.release_conn()
+            logger.debug(f"Successfully retrieved object {full_object_name} from bucket {self.bucket_name}")
+            return data
+        except S3Error as e:
+            logger.error(f"Failed to retrieve object {full_object_name} from {self.bucket_name}: {str(e)}")
+            available_objects = [obj.object_name[len(self.sop_prefix):] for obj in self.client.list_objects(self.bucket_name, prefix=self.sop_prefix, recursive=True)]
+            logger.warning(f"Available objects in {self.sop_prefix}: {', '.join(available_objects)}")
+            raise ValueError(f"Object {object_name} not found in {self.bucket_name}/{self.sop_prefix}. Available objects: {', '.join(available_objects)}")
+        except Exception as e:
+            logger.error(f"Error retrieving object {full_object_name}: {str(e)}")
+            raise ValueError(f"Error retrieving object {object_name}: {str(e)}")
 
     def get_pdf_content(self, filename: str) -> str:
         try:
